@@ -82,154 +82,163 @@ class TestHtmlForms(BaseGrabTestCase):
         self.g = build_grab()
         self.g.fake_response(FORMS)
 
-    def test_choose_form(self):
-        """
-        Test ``choose_form`` method
-        """
+    #def test_choose_form(self):
+    #    """
+    #    Test ``choose_form`` method
+    #    """
 
-        # raise errors
-        self.assertRaises(DataNotFound, self.g.choose_form, 10)
-        self.assertRaises(DataNotFound, self.g.choose_form, id='bad_id')
-        self.assertRaises(DataNotFound, self.g.choose_form, id='fake_form')
-        self.assertRaises(GrabMisuseError, self.g.choose_form)
+    #    # raise errors
+    #    self.assertRaises(DataNotFound, self.g.choose_form, 10)
+    #    self.assertRaises(DataNotFound, self.g.choose_form, id='bad_id')
+    #    self.assertRaises(DataNotFound, self.g.choose_form, id='fake_form')
+    #    self.assertRaises(GrabMisuseError, self.g.choose_form)
 
-        # check results
-        self.g.choose_form(0)
-        self.assertEqual('form', self.g.doc._lxml_form.tag)
-        self.assertEqual('search_form', self.g.doc._lxml_form.get('id'))
+    #    # check results
+    #    self.g.choose_form(0)
+    #    self.assertEqual('form', self.g.doc._lxml_form.tag)
+    #    self.assertEqual('search_form', self.g.doc._lxml_form.get('id'))
 
-        # reset current form
-        self.g.doc._lxml_form = None
+    #    # reset current form
+    #    self.g.doc._lxml_form = None
 
-        self.g.choose_form(id='common_form')
-        self.assertEqual('form', self.g.doc._lxml_form.tag)
-        self.assertEqual('common_form', self.g.doc._lxml_form.get('id'))
+    #    self.g.choose_form(id='common_form')
+    #    self.assertEqual('form', self.g.doc._lxml_form.tag)
+    #    self.assertEqual('common_form', self.g.doc._lxml_form.get('id'))
 
-        # reset current form
-        self.g.doc._lxml_form = None
+    #    # reset current form
+    #    self.g.doc._lxml_form = None
 
-        self.g.choose_form(name='dummy')
-        self.assertEqual('form', self.g.doc._lxml_form.tag)
-        self.assertEqual('dummy', self.g.doc._lxml_form.get('name'))
+    #    self.g.choose_form(name='dummy')
+    #    self.assertEqual('form', self.g.doc._lxml_form.tag)
+    #    self.assertEqual('dummy', self.g.doc._lxml_form.get('name'))
 
-        # reset current form
-        self.g.doc._lxml_form = None
+    #    # reset current form
+    #    self.g.doc._lxml_form = None
 
-        self.g.choose_form(xpath='//form[contains(@action, "/dummy")]')
-        self.assertEqual('form', self.g.doc._lxml_form.tag)
-        self.assertEqual('dummy', self.g.doc._lxml_form.get('name'))
+    #    self.g.choose_form(xpath='//form[contains(@action, "/dummy")]')
+    #    self.assertEqual('form', self.g.doc._lxml_form.tag)
+    #    self.assertEqual('dummy', self.g.doc._lxml_form.get('name'))
 
-    def assertEqualQueryString(self, qs1, qs2):
-        args1 = set([(x, y) for x, y in parse_qsl(qs1)])
-        args2 = set([(x, y) for x, y in parse_qsl(qs2)])
-        self.assertEqual(args1, args2)
+    #def assertEqualQueryString(self, qs1, qs2):
+    #    args1 = set([(x, y) for x, y in parse_qsl(qs1)])
+    #    args2 = set([(x, y) for x, y in parse_qsl(qs2)])
+    #    self.assertEqual(args1, args2)
 
-    def test_submit(self):
-        g = build_grab()
-        self.server.response['get.data'] = POST_FORM % self.server.get_url()
-        g.go(self.server.get_url())
-        g.set_input('name', 'Alex')
-        g.doc.submit()
-        self.assertEqualQueryString(self.server.request['data'],
-                                    b'name=Alex&secret=123')
+    #def test_submit(self):
+    #    g = build_grab()
+    #    self.server.response['get.data'] = POST_FORM % self.server.get_url()
+    #    g.go(self.server.get_url())
+    #    g.set_input('name', 'Alex')
+    #    g.doc.submit()
+    #    self.assertEqualQueryString(self.server.request['data'],
+    #                                b'name=Alex&secret=123')
 
-        # Default submit control
-        self.server.response['get.data'] = MULTIPLE_SUBMIT_FORM
-        g.go(self.server.get_url())
-        g.doc.submit()
-        self.assertEqualQueryString(self.server.request['data'],
-                                    b'secret=123&submit1=submit1')
+    #    # Default submit control
+    #    self.server.response['get.data'] = MULTIPLE_SUBMIT_FORM
+    #    g.go(self.server.get_url())
+    #    g.doc.submit()
+    #    self.assertEqualQueryString(self.server.request['data'],
+    #                                b'secret=123&submit1=submit1')
 
-        # Selected submit control
-        self.server.response['get.data'] = MULTIPLE_SUBMIT_FORM
-        g.go(self.server.get_url())
-        g.doc.submit(submit_name='submit2')
-        self.assertEqualQueryString(self.server.request['data'],
-                                    b'secret=123&submit2=submit2')
+    #    # Selected submit control
+    #    self.server.response['get.data'] = MULTIPLE_SUBMIT_FORM
+    #    g.go(self.server.get_url())
+    #    g.doc.submit(submit_name='submit2')
+    #    self.assertEqualQueryString(self.server.request['data'],
+    #                                b'secret=123&submit2=submit2')
 
-        # Default submit control if submit control name is invalid
-        self.server.response['get.data'] = MULTIPLE_SUBMIT_FORM
-        g.go(self.server.get_url())
-        g.doc.submit(submit_name='submit3')
-        self.assertEqualQueryString(self.server.request['data'],
-                                    b'secret=123&submit1=submit1')
+    #    # Default submit control if submit control name is invalid
+    #    self.server.response['get.data'] = MULTIPLE_SUBMIT_FORM
+    #    g.go(self.server.get_url())
+    #    g.doc.submit(submit_name='submit3')
+    #    self.assertEqualQueryString(self.server.request['data'],
+    #                                b'secret=123&submit1=submit1')
 
-    def test_submit_remove_from_post_argument(self):
-        g = build_grab()
-        self.server.response['get.data'] = MULTIPLE_SUBMIT_FORM
+    #def test_submit_remove_from_post_argument(self):
+    #    g = build_grab()
+    #    self.server.response['get.data'] = MULTIPLE_SUBMIT_FORM
 
-        g.go(self.server.get_url())
-        g.doc.submit(submit_name='submit3')
-        self.assertEqualQueryString(self.server.request['data'],
-                                    b'secret=123&submit1=submit1')
+    #    g.go(self.server.get_url())
+    #    g.doc.submit(submit_name='submit3')
+    #    self.assertEqualQueryString(self.server.request['data'],
+    #                                b'secret=123&submit1=submit1')
 
-        g.go(self.server.get_url())
-        g.doc.submit(remove_from_post=['submit1'])
-        self.assertEqualQueryString(self.server.request['data'],
-                                    b'secret=123')
+    #    g.go(self.server.get_url())
+    #    g.doc.submit(remove_from_post=['submit1'])
+    #    self.assertEqualQueryString(self.server.request['data'],
+    #                                b'secret=123')
 
-    def test_set_methods(self):
-        g = build_grab()
-        self.server.response['get.data'] = FORMS
-        g.go(self.server.get_url())
+    #def test_set_methods(self):
+    #    g = build_grab()
+    #    self.server.response['get.data'] = FORMS
+    #    g.go(self.server.get_url())
 
-        self.assertEqual(g.doc._lxml_form, None)
+    #    self.assertEqual(g.doc._lxml_form, None)
 
-        g.set_input('gender', '1')
-        self.assertEqual('common_form', g.doc._lxml_form.get('id'))
+    #    g.set_input('gender', '1')
+    #    self.assertEqual('common_form', g.doc._lxml_form.get('id'))
 
-        self.assertRaises(KeyError, lambda: g.set_input('query', 'asdf'))
+    #    self.assertRaises(KeyError, lambda: g.set_input('query', 'asdf'))
 
-        g.doc._lxml_form = None
-        g.set_input_by_id('search_box', 'asdf')
-        self.assertEqual('search_form', g.doc._lxml_form.get('id'))
+    #    g.doc._lxml_form = None
+    #    g.set_input_by_id('search_box', 'asdf')
+    #    self.assertEqual('search_form', g.doc._lxml_form.get('id'))
 
-        g.choose_form(xpath='//form[@id="common_form"]')
-        g.set_input_by_number(0, 'asdf')
+    #    g.choose_form(xpath='//form[@id="common_form"]')
+    #    g.set_input_by_number(0, 'asdf')
 
-        g.doc._lxml_form = None
-        g.set_input_by_xpath('//*[@name="gender"]', '2')
-        self.assertEqual('common_form', g.doc._lxml_form.get('id'))
+    #    g.doc._lxml_form = None
+    #    g.set_input_by_xpath('//*[@name="gender"]', '2')
+    #    self.assertEqual('common_form', g.doc._lxml_form.get('id'))
 
-    def test_html_without_forms(self):
-        g = build_grab()
-        self.server.response['get.data'] = NO_FORM_HTML
-        g.go(self.server.get_url())
-        self.assertRaises(DataNotFound, lambda: g.form)
+    #def test_html_without_forms(self):
+    #    g = build_grab()
+    #    self.server.response['get.data'] = NO_FORM_HTML
+    #    g.go(self.server.get_url())
+    #    self.assertRaises(DataNotFound, lambda: g.form)
 
-    def test_disabled_radio(self):
-        """
-        Bug #57
-        """
+    #def test_disabled_radio(self):
+    #    """
+    #    Bug #57
+    #    """
 
-        g = build_grab()
-        self.server.response['get.data'] = DISABLED_RADIO_HTML
-        g.go(self.server.get_url())
-        g.doc.submit(make_request=False)
+    #    g = build_grab()
+    #    self.server.response['get.data'] = DISABLED_RADIO_HTML
+    #    g.go(self.server.get_url())
+    #    g.doc.submit(make_request=False)
 
-    def test_set_input_by_xpath_regex(self):
-        html = b'''
-            <div><form action="" method="post"><input name="foo" type="text">
-            <input name="bar" id="bar" type="text">
-        '''
-        g = build_grab(html)
-        g.set_input_by_xpath('//input[re:test(@id, "^ba")]', 'bar-value')
-        g.doc.submit(make_request=False)
-        self.assertEqual(
-            set([('foo', None), ('bar', 'bar-value')]),
-            set(g.config['post']),
-        )
+    #def test_set_input_by_xpath_regex(self):
+    #    html = b'''
+    #        <div><form action="" method="post"><input name="foo" type="text">
+    #        <input name="bar" id="bar" type="text">
+    #    '''
+    #    g = build_grab(html)
+    #    g.set_input_by_xpath('//input[re:test(@id, "^ba")]', 'bar-value')
+    #    g.doc.submit(make_request=False)
+    #    self.assertEqual(
+    #        set([('foo', None), ('bar', 'bar-value')]),
+    #        set(g.config['post']),
+    #    )
 
-    def test_unicode_textarea_form(self):
-        html = u'''
-            <form enctype="multipart/form-data" action=""
-                method="post" accept-charset="UTF-8">
-                <textarea name="body">Beställa</textarea>
-                <input type="submit" name="op" value="Save"/>
-            </form>
-        '''.encode('utf-8')
-        self.server.response['get.data'] = html
-        g = build_grab()
-        g.go(self.server.get_url())
-        g.doc.submit()
-        self.assertTrue(u'Beställa'.encode('utf-8') in self.server.request['data'])
+    #def test_unicode_textarea_form(self):
+    #    html = u'''
+    #        <form enctype="multipart/form-data" action=""
+    #            method="post" accept-charset="UTF-8">
+    #            <textarea name="body">Beställa</textarea>
+    #            <input type="submit" name="op" value="Save"/>
+    #        </form>
+    #    '''.encode('utf-8')
+    #    self.server.response['get.data'] = html
+    #    g = build_grab()
+    #    g.go(self.server.get_url())
+    #    g.doc.submit()
+    #    self.assertTrue(u'Beställa'.encode('utf-8') in self.server.request['data'])
+
+    def test_select_multiple(self):
+        html = b'''<form><select name="x" multiple>
+            <option value="1" selected></option>
+            <option value="2"></option>
+            <option value="2" selected></option>
+        </select>'''
+        g = build_grab(html, debug_post=True)
+        print(g.doc.form_fields())

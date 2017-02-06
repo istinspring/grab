@@ -686,6 +686,7 @@ class FormExtension(object):
         """
 
         fields = dict(self.form.fields)
+        print('mult', fields['x'].multiple)
         for elem in self.form.inputs:
             # Ignore elements without name
             if not elem.get('name'):
