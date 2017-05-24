@@ -23,14 +23,14 @@ from grab.spider.error import (SpiderError, SpiderMisuseError, FatalError,
                                NoTaskHandler, NoDataHandler,
                                SpiderConfigurationError)
 from grab.spider.task import Task
-from grab.spider.data import Data
 from grab.proxylist import ProxyList, BaseProxySource
 from grab.util.misc import camel_case_to_underscore
 from grab.base import GLOBAL_STATE
 from grab.stat import Stat
-from grab.spider.parser_component import ParserComponent
+from grab.spider.parser_service import ParserService
 from grab.spider.cache_pipeline import CachePipeline
 from grab.util.warning import warn
+from grab.spider.task_generator_service import TaskGeneratorService
 
 DEFAULT_TASK_PRIORITY = 100
 DEFAULT_NETWORK_STREAM_NUMBER = 3
@@ -74,64 +74,6 @@ class SpiderMetaClass(type):
             namespace['Meta'].abstract = False
 
         return super(SpiderMetaClass, mcs).__new__(mcs, name, bases, namespace)
-
-
-class TaskGeneratorWrapperThread(Thread):
-    """
-    Load new tasks from `self.task_generator_object`
-    Create new tasks.
-
-    If task queue size is less than some value
-    then load new tasks from tasks file.
-    """
-
-    def __init__(self, real_generator, spider, *args, **kwargs):
-        from threading import Event
-
-        self.real_generator = real_generator
-        self.spider = spider
-        self.is_paused = Event()
-        self.activity_paused = Event()
-        super(TaskGeneratorWrapperThread, self).__init__(*args, **kwargs)
-
-    def pause(self):
-        self.is_paused.set()
-        while not self.activity_paused.is_set():
-            time.sleep(0.01)
-            if not self.isAlive():
-                break
-        #self.activity_paused.wait()
-
-    def resume(self):
-        self.is_paused.clear()
-        # Wait for `if self.is_puased.is_set()` branch
-        # to be completed
-        while self.activity_paused.is_set():
-            if not self.isAlive():
-                break
-            time.sleep(0.01)
-
-    def run(self):
-        while True:
-            if self.is_paused.is_set():
-                self.activity_paused.set()
-                while self.is_paused.is_set():
-                    time.sleep(0.01)
-                self.activity_paused.clear()
-            queue_size = self.spider.task_queue.size()
-            min_limit = self.spider.thread_number * 10
-            if queue_size < min_limit:
-                try:
-                    for _ in six.moves.range(min_limit - queue_size):
-                        if self.is_paused.is_set():
-                            break
-                        item = next(self.real_generator)
-                        self.spider.process_handler_result(item, None)
-                except StopIteration:
-                    # If generator have no values to yield then disable it
-                    break
-            else:
-                time.sleep(0.1)
 
 
 @six.add_metaclass(SpiderMetaClass)
@@ -190,7 +132,6 @@ class Spider(object):
                  # MP:
                  network_result_queue=None,
                  parser_result_queue=None,
-                 is_parser_idle=None,
                  shutdown_event=None,
                  parser_requests_per_process=10000,
                  parser_pool_size=1,
@@ -234,7 +175,6 @@ class Spider(object):
         else:
             self.network_result_queue = Queue()
         self.parser_result_queue = parser_result_queue
-        self.is_parser_idle = is_parser_idle
         if shutdown_event is not None:
             self.shutdown_event = shutdown_event
         else:
@@ -290,10 +230,10 @@ class Spider(object):
         self.proxy_auto_change = False
         self.interrupted = False
 
-        self._task_generator_list = []
+        self._task_generator_services = []
         self.cache_pipeline = None
         self.parser_pool_size = parser_pool_size
-        self.parser_component = None
+        self.parser_service = None
         self.transport = None
 
     def setup_cache(self, backend='mongo', database=None, use_compression=True,
@@ -594,11 +534,9 @@ class Spider(object):
             for url in self.initial_urls: # pylint: disable=not-an-iterable
                 self.add_task(Task('initial', url=url))
 
-        self._task_generator_list = []
-        thread = TaskGeneratorWrapperThread(self.task_generator(), self)
-        thread.daemon = True
-        thread.start()
-        self._task_generator_list.append(thread)
+        srv = TaskGeneratorService(self.task_generator(), self)
+        srv.start()
+        self._task_generator_services.append(srv)
 
     def get_task_from_queue(self):
         try:
@@ -660,23 +598,11 @@ class Spider(object):
             # logger.error(ex.tb)
             raise ex
 
-    def find_data_handler(self, data):
-        try:
-            return getattr(data, 'handler')
-        except AttributeError:
-            try:
-                handler = getattr(self, 'data_%s' % data.handler_key)
-            except AttributeError:
-                raise NoDataHandler('No handler defined for Data %s'
-                                    % data.handler_key)
-            else:
-                return handler
-
-    def run_parser(self):
+    def run_parser(self, is_parser_idle):
         """
         Main work cycle of spider process working in parser-mode.
         """
-        self.is_parser_idle.clear()
+        is_parser_idle.clear()
         self.prepare_parser()
         process_request_count = 0
         try:
@@ -685,9 +611,9 @@ class Spider(object):
                 try:
                     result = self.network_result_queue.get(block=False)
                 except queue.Empty:
-                    self.is_parser_idle.set()
+                    is_parser_idle.set()
                     time.sleep(0.1)
-                    self.is_parser_idle.clear()
+                    is_parser_idle.clear()
                     if self.shutdown_event.is_set():
                         return
                 else:
@@ -719,9 +645,6 @@ class Spider(object):
                 for something in handler_result:
                     self.parser_result_queue.put((something,
                                                   result['task']))
-        except NoDataHandler as ex:
-            ex.tb = format_exc()
-            self.parser_result_queue.put((ex, result['task']))
         except Exception as ex: # pylint: disable=broad-except
             ex.tb = format_exc()
             self.parser_result_queue.put((ex, result['task']))
@@ -806,46 +729,27 @@ class Spider(object):
         return proc
 
     def is_ready_to_shutdown(self):
-        # Things should be true to shutdown spider
-        # 1) No active task handlers (task_* functions)
-        # 2) All task generators has completed work
-        # 3) No active network threads
-        # 4) Task queue is empty
-        # 5) Network result queue is empty
-        # 6) Cache is disabled or is in idle mode
-
-        # print('parser result queue', self.parser_result_queue.qsize())
-        # print('all parsers are idle', all(x['is_parser_idle'].is_set()
-        #                                  for x in (self.parser_pipeline
-        #                                            .parser_pool)))
-        # print('alive task generators',
-        #       any(x.isAlive() for x in self._task_generator_list))
-        # print('active network threads',
-        #       self.transport.get_active_threads_number())
-        #print('!IS READY: cache is idle: %s' % self.cache_pipeline.is_idle())
         try:
             if self.cache_pipeline:
                 self.cache_pipeline.pause()
-            for th in self._task_generator_list:
-                th.pause()
+            for srv in self._task_generator_services:
+                srv.pause()
             return (
                 not self.parser_result_queue.qsize()
                 and all(x['is_parser_idle'].is_set()
-                        for x in self.parser_component.parser_pool)
-                and not any(x.isAlive() for x
-                            in self._task_generator_list)  # (2)
+                        for x in self.parser_service.parser_pool)
+                and not any(x.is_alive() for x
+                            in self._task_generator_services)  # (2)
                 and not self.transport.get_active_threads_number()  # (3)
                 and not self.task_queue.size()  # (4)
                 and not self.network_result_queue.qsize()  # (5)
-                and (self.cache_pipeline is None
-                     or self.cache_pipeline.is_idle())
             )
         finally:
             #print('!resuming cache')
             if self.cache_pipeline:
                 self.cache_pipeline.resume()
-            for th in self._task_generator_list:
-                th.resume()
+            for srv in self._task_generator_services:
+                srv.resume()
 
     def run(self):
         """
@@ -869,10 +773,11 @@ class Spider(object):
             http_api_proc = None
 
         self.parser_result_queue = Queue()
-        self.parser_component = ParserComponent(
+        self.parser_service = ParserService(
             spider=self,
             pool_size=self.parser_pool_size,
         )
+        self.parser_service.start()
         network_result_queue_limit = max(10, self.thread_number * 2)
 
         try:
@@ -1057,7 +962,7 @@ class Spider(object):
                         self.process_handler_result(p_res, p_task)
 
                 if not self.shutdown_event.is_set():
-                    self.parser_component.check_pool_health()
+                    self.parser_service.check_pool_health()
         except KeyboardInterrupt:
             logger.info('\nGot ^C signal in process %d. Stopping.',
                         os.getpid())
@@ -1110,26 +1015,12 @@ class Spider(object):
         Result could be:
         * None
         * Task instance
-        * Data instance.
         * ResponseNotValid-based exception
         * Arbitrary exception
         """
 
         if isinstance(result, Task):
             self.add_task(result)
-        elif isinstance(result, Data):
-            handler = self.find_data_handler(result)
-            try:
-                data_result = handler(**result.storage)
-                if data_result is None:
-                    pass
-                else:
-                    for something in data_result:
-                        self.process_handler_result(something, task)
-
-            except Exception as ex: # pylint: disable=broad-except
-                self.process_handler_error('data_%s' % result.handler_key,
-                                           ex, task)
         elif result is None:
             pass
         elif isinstance(result, ResponseNotValid):
