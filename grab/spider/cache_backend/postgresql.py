@@ -1,3 +1,5 @@
+# TODO: implement is_compressed flag
+# TODO: close method
 """
 CacheItem interface:
 '_id': string,

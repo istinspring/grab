@@ -22,14 +22,15 @@ from weblib.encoding import make_str
 
 from grab.document import Document
 from grab.cookie import CookieManager
+from grab import version_numeric
 
 # pylint: disable=invalid-name
-logger = logging.getLogger('grab.spider.cache_backend.mongo')
+logger = logging.getLogger('grab.spider.cache_backend.mongodb')
 # pylint: enable=invalid-name
 
 
 class CacheBackend(object):
-    def __init__(self, database, use_compression=True, spider=None, **kwargs):
+    def __init__(self, database, use_compression=False, spider=None, **kwargs):
         self.spider = spider
         self.conn = pymongo.MongoClient(**kwargs)
         self.dbase = self.conn[database]
@@ -60,7 +61,14 @@ class CacheBackend(object):
         grab.setup_document(cache_item['body'])
 
         body = cache_item['body']
-        if self.use_compression:
+        # Till the 0.6.39 version there was no compressed flag
+        # so it was possible to detected the compressed item
+        # only by analyzing the byte stream
+        try:
+            is_compressed = cache_item['is_compressed']
+        except KeyError:
+            is_compressed = (body[0] == 120)
+        if is_compressed:
             body = zlib.decompress(body)
 
         def custom_prepare_response_func(transport, grab):
@@ -94,13 +102,14 @@ class CacheBackend(object):
             'head': Binary(grab.doc.head),
             'response_code': grab.doc.code,
             'cookies': None,
+            'is_compressed': self.use_compression,
         }
         try:
             self.dbase.cache.save(item, w=1)
         except Exception as ex: # pylint: disable=broad-except
             if 'document too large' in six.text_type(ex):
-                logging.error('Document too large. It was not saved into mongo'
-                              ' cache. Url: %s', url)
+                logging.error('Document too large. It was not saved into'
+                              'mongodb cache. Url: %s', url)
             else:
                 raise
 

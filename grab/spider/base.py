@@ -28,9 +28,9 @@ from grab.util.misc import camel_case_to_underscore
 from grab.base import GLOBAL_STATE
 from grab.stat import Stat
 from grab.spider.parser_service import ParserService
-from grab.spider.cache_pipeline import CachePipeline
-from grab.util.warning import warn
+from grab.spider.cache_service import CacheService
 from grab.spider.task_generator_service import TaskGeneratorService
+from grab.util.warning import warn
 
 DEFAULT_TASK_PRIORITY = 100
 DEFAULT_NETWORK_STREAM_NUMBER = 3
@@ -231,12 +231,12 @@ class Spider(object):
         self.interrupted = False
 
         self._task_generator_services = []
-        self.cache_pipeline = None
+        self.cache_service = None
         self.parser_pool_size = parser_pool_size
         self.parser_service = None
         self.transport = None
 
-    def setup_cache(self, backend='mongo', database=None, use_compression=True,
+    def setup_cache(self, backend='mongodb', database=None, use_compression=True,
                     **kwargs):
         """
         Setup cache.
@@ -250,12 +250,19 @@ class Spider(object):
         if database is None:
             raise SpiderMisuseError('setup_cache method requires database '
                                     'option')
+        if backend == 'mongo':
+            warn('Backend name "mongo" is deprecated. Use "mongodb" instead.')
+            backend = 'mongodb'
         mod = __import__('grab.spider.cache_backend.%s' % backend,
                          globals(), locals(), ['foo'])
-        cache = mod.CacheBackend(database=database,
-                                 use_compression=use_compression,
-                                 spider=self, **kwargs)
-        self.cache_pipeline = CachePipeline(self, cache)
+        backend = mod.CacheBackend(
+            database=database,
+            use_compression=use_compression,
+            spider=self,
+            **kwargs,
+        )
+        self.cache_service = CacheService(self, backend)
+        self.cache_service.start()
 
     def setup_queue(self, backend='memory', **kwargs):
         """
@@ -730,8 +737,8 @@ class Spider(object):
 
     def is_ready_to_shutdown(self):
         try:
-            if self.cache_pipeline:
-                self.cache_pipeline.pause()
+            if self.cache_service:
+                self.cache_service.pause()
             for srv in self._task_generator_services:
                 srv.pause()
             return (
@@ -746,8 +753,8 @@ class Spider(object):
             )
         finally:
             #print('!resuming cache')
-            if self.cache_pipeline:
-                self.cache_pipeline.resume()
+            if self.cache_service:
+                self.cache_service.resume()
             for srv in self._task_generator_services:
                 srv.resume()
 
@@ -800,8 +807,8 @@ class Spider(object):
                 if (self.transport.get_free_threads_number()
                         and (self.network_result_queue.qsize()
                              < network_result_queue_limit)
-                        and (self.cache_pipeline is None
-                             or self.cache_pipeline.has_free_resources())):
+                        and (self.cache_service is None
+                             or self.cache_service.has_free_resources())):
                     if pending_tasks:
                         task = pending_tasks.popleft()
                     else:
@@ -852,9 +859,9 @@ class Spider(object):
                         is_valid, reason = self.check_task_limits(task)
                         if is_valid:
                             task_grab = self.setup_grab_for_task(task)
-                            if self.cache_pipeline:
+                            if self.cache_service:
                                 # CACHE:
-                                self.cache_pipeline.add_task(
+                                self.cache_service.add_task(
                                     ('load', (task, task_grab)),
                                 )
                                 #print('!sent to cache')
@@ -875,10 +882,10 @@ class Spider(object):
                 results = [(x, False) for x in
                            self.transport.iterate_results()]
                 #print('!network results: %s' % results)
-                if self.cache_pipeline:
+                if self.cache_service:
                     # CACHE: for action, result in
-                    # self.cache_pipeline.get_ready_results()
-                    for action, result in (self.cache_pipeline
+                    # self.cache_service.get_ready_results()
+                    for action, result in (self.cache_service
                                            .get_ready_results()):
                         #print('thing from cache: %s:%s' % (action, result))
                         assert action in ('network_result', 'task')
@@ -903,21 +910,16 @@ class Spider(object):
                         and (task is None or bool(task) is True)
                         and not self.transport.get_active_threads_number()
                         and not self.parser_result_queue.qsize()
-                        and (self.cache_pipeline is None
-                             or self.cache_pipeline.is_idle())):
-                        # CACHE: is_idle()
-                        #or (self.cache_pipeline.input_queue.qsize() == 0
-                        #    and self.cache_pipeline.is_idle()
-                        #    and self.cache_pipeline.result_queue.qsize()
-                        #    == 0))
+                        and (self.cache_service is None
+                             or self.cache_service.is_idle())):
                     time.sleep(0.001)
 
                 for result, from_cache in results:
                     #print('!processing result %s' % result)
-                    if self.cache_pipeline and not from_cache:
+                    if self.cache_service and not from_cache:
                         if result['ok']:
                             # CACHE:
-                            self.cache_pipeline.add_task(
+                            self.cache_service.add_task(
                                 ('save', (result['task'], result['grab'])),
                             )
                     self.log_network_result_stats(
