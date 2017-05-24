@@ -22,7 +22,6 @@ NON_ROUTABLE_IP = '10.0.0.0'
 
 GLOBAL = {
     'backends': [],
-    'mp_mode': False,
     'grab_transport': None,
     'spider_transport': None,
 }
@@ -58,15 +57,9 @@ def build_grab(*args, **kwargs):
 
 
 def build_spider(cls, **kwargs):
-    """Builds the Spider instance with default options. Also handles
-    `--mp-mode` option that is configured globally."""
-    kwargs.setdefault('mp_mode', GLOBAL['mp_mode'])
+    """Builds the Spider instance with default options."""
     kwargs.setdefault('grab_transport', GLOBAL['grab_transport'])
     kwargs.setdefault('transport', GLOBAL['spider_transport'])
-    if kwargs['mp_mode']:
-        kwargs.setdefault('parser_pool_size', 2)
-    else:
-        kwargs['parser_pool_size'] = 1
     return cls(**kwargs)
 
 
@@ -81,19 +74,6 @@ class BaseGrabTestCase(TestCase):
     @classmethod
     def tearDownClass(cls):
         cls.server.stop()
-
-
-def multiprocess_mode(mode):
-    def wrapper_builder(func):
-        def wrapper(self, *args, **kwargs):
-            if mode != GLOBAL['mp_mode']:
-                logger.debug('Skipping %s:%s:%s. Reason: needs --mp-mode=%s',
-                             func.__module__, self.__class__.__name__,
-                             func.__name__, mode)
-            else:
-                return func(self, *args, **kwargs)
-        return wrapper
-    return wrapper_builder
 
 
 def start_server():
