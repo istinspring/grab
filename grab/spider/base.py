@@ -1,5 +1,6 @@
 # FIXME: split to modules, make smaller
 # pylint: disable=too-many-lines
+# TODO: cache_service input task queue should be powered by task queue backend
 import logging
 import time
 from random import randint
@@ -28,9 +29,11 @@ from grab.util.misc import camel_case_to_underscore
 from grab.base import GLOBAL_STATE
 from grab.stat import Stat
 from grab.spider.parser_service import ParserService
-from grab.spider.cache_service import CacheService
+from grab.spider.cache_service import CacheReaderService, CacheWriterService
 from grab.spider.task_generator_service import TaskGeneratorService
 from grab.util.warning import warn
+from grab.spider.task_dispatcher_service import TaskDispatcherService
+from grab.spider.http_api_service import HttpApiService
 
 DEFAULT_TASK_PRIORITY = 100
 DEFAULT_NETWORK_STREAM_NUMBER = 3
@@ -89,7 +92,7 @@ class Spider(object):
     # If the logic of generating initial tasks is complex
     # then consider to use `task_generator` method instead of
     # `initial_urls` attribute
-    initial_urls = None
+    initial_urls = []
 
     class Meta:
         # pylint: disable=no-init
@@ -119,26 +122,28 @@ class Spider(object):
     # Public Methods
     # **************
 
-    def __init__(self, thread_number=None,
-                 network_try_limit=None, task_try_limit=None,
-                 request_pause=NULL,
-                 priority_mode='random',
-                 meta=None,
-                 only_cache=False,
-                 config=None,
-                 args=None,
-                 # New options start here
-                 taskq=None,
-                 # MP:
-                 network_result_queue=None,
-                 parser_result_queue=None,
-                 shutdown_event=None,
-                 parser_requests_per_process=10000,
-                 parser_pool_size=1,
-                 # http api
-                 http_api_port=None,
-                 transport='multicurl',
-                 grab_transport='pycurl'):
+    def __init__(
+        self,
+        thread_number=None,
+        network_try_limit=None, task_try_limit=None,
+        request_pause=NULL,
+        priority_mode='random',
+        meta=None,
+        only_cache=False,
+        config=None,
+        args=None,
+        # New options start here
+        taskq=None,
+        # MP:
+        parser_requests_per_process=10000,
+        parser_pool_size=1,
+        # http api
+        http_api_port=None,
+        network_service='multicurl',
+        grab_transport='pycurl',
+        # Deprecated
+        transport=None,
+    ):
         """
         Arguments:
         * thread-number - Number of concurrent network streams
@@ -164,21 +169,8 @@ class Spider(object):
         # API:
         self.http_api_port = http_api_port
 
-        assert transport in ('multicurl', 'threaded')
-        self.transport_name = transport
-
         assert grab_transport in ('pycurl', 'urllib3')
         self.grab_transport_name = grab_transport
-
-        if network_result_queue is not None:
-            self.network_result_queue = network_result_queue
-        else:
-            self.network_result_queue = Queue()
-        self.parser_result_queue = parser_result_queue
-        if shutdown_event is not None:
-            self.shutdown_event = shutdown_event
-        else:
-            self.shutdown_event = Event()
         self.parser_requests_per_process = parser_requests_per_process
 
         self.stat = Stat()
@@ -230,11 +222,33 @@ class Spider(object):
         self.proxy_auto_change = False
         self.interrupted = False
 
-        self._task_generator_services = []
-        self.cache_service = None
+        self.task_generator_services = []
+        self.cache_reader_service = None
+        self.cache_writer_service = None
         self.parser_pool_size = parser_pool_size
-        self.parser_service = None
-        self.transport = None
+        self.parser_service = ParserService(
+            spider=self,
+            pool_size=self.parser_pool_size,
+        )
+
+        if transport is not None:
+            warn('The "transport" argument of Spider constructor is deprecated.'
+                 ' Use "network_service" argument.')
+            network_service = transport
+        assert network_service in ('multicurl', 'threaded')
+        if network_service == 'multicurl':
+            from grab.spider.network_service.multicurl import NetworkServiceMulticurl
+            self.network_service = NetworkServiceMulticurl(self, self.thread_number)
+        elif network_service == 'threaded':
+            from grab.spider.network_service.threaded import NetworkServiceThreaded
+            self.network_service = NetworkServiceThreaded(self, self.thread_number)
+
+        self.task_dispatcher = TaskDispatcherService(self)
+
+        if self.http_api_port:
+            self.http_api_service = HttpApiService()
+        else:
+            self.http_api_service = None
 
     def setup_cache(self, backend='mongodb', database=None, use_compression=True,
                     **kwargs):
@@ -259,10 +273,12 @@ class Spider(object):
             database=database,
             use_compression=use_compression,
             spider=self,
-            **kwargs,
+            **kwargs
         )
-        self.cache_service = CacheService(self, backend)
-        self.cache_service.start()
+        self.cache_reader_service = CacheReaderService(self, backend)
+        self.cache_reader_service.start()
+        self.cache_writer_service = CacheWriterService(self, backend)
+        self.cache_writer_service.start()
 
     def setup_queue(self, backend='memory', **kwargs):
         """
@@ -278,11 +294,16 @@ class Spider(object):
         self.task_queue = mod.QueueBackend(spider_name=self.get_spider_name(),
                                            **kwargs)
 
-    def add_task(self, task, raise_error=False):
+    def add_task(self, task, queue=None, raise_error=False):
         """
         Add task to the task queue.
         """
 
+        if queue is None:
+            if self.cache_reader_service:
+                queue = self.cache_reader_service.input_queue
+            else:
+                queue = self.task_queue
         if self.task_queue is None:
             raise SpiderMisuseError('You should configure task queue before '
                                     'adding tasks. Use `setup_queue` method.')
@@ -313,8 +334,11 @@ class Spider(object):
 
         # TODO: keep original task priority if it was set explicitly
         # WTF the previous comment means?
-        self.task_queue.put(task, task.priority,
-                            schedule_time=task.schedule_time)
+        from queue import Queue
+        if isinstance(queue, Queue):
+            queue.put(task, task.priority)
+        else:
+            queue.put(task, task.priority, schedule_time=task.schedule_time)
         return True
 
     def stop(self):
@@ -448,17 +472,6 @@ class Spider(object):
         this method in your Spider class.
         """
 
-    def prepare_parser(self):
-        """
-        You can do additional spider customization here
-        before it has started working. Simply redefine
-        this method in your Spider class.
-
-        This method is called only from Spider working in parser mode
-        that, in turn, is spawned automatically by main spider proces
-        working in multiprocess mode.
-        """
-
     def shutdown(self):
         """
         You can override this method to do some final actions
@@ -531,19 +544,10 @@ class Spider(object):
         else:
             return randint(*RANDOM_TASK_PRIORITY_RANGE)
 
-    def start_task_generators(self):
-        """
-        Process `self.initial_urls` list and `self.task_generator`
-        method.
-        """
-
+    def process_initial_urls(self):
         if self.initial_urls:
-            for url in self.initial_urls: # pylint: disable=not-an-iterable
+            for url in self.initial_urls:
                 self.add_task(Task('initial', url=url))
-
-        srv = TaskGeneratorService(self.task_generator(), self)
-        srv.start()
-        self._task_generator_services.append(srv)
 
     def get_task_from_queue(self):
         try:
@@ -577,7 +581,7 @@ class Spider(object):
         return (code < 400 or code == 404 or
                 code in task.valid_status)
 
-    def process_handler_error(self, func_name, ex, task):
+    def process_parser_error(self, func_name, ex, task):
         self.stat.inc('spider:error-%s' % ex.__class__.__name__.lower())
 
         if hasattr(ex, 'tb'):
@@ -605,56 +609,18 @@ class Spider(object):
             # logger.error(ex.tb)
             raise ex
 
-    def run_parser(self, is_parser_idle):
-        """
-        Main work cycle of spider process working in parser-mode.
-        """
-        is_parser_idle.clear()
-        self.prepare_parser()
-        process_request_count = 0
-        try:
-            work_permitted = True
-            while work_permitted:
-                try:
-                    result = self.network_result_queue.get(block=False)
-                except queue.Empty:
-                    is_parser_idle.set()
-                    time.sleep(0.1)
-                    is_parser_idle.clear()
-                    if self.shutdown_event.is_set():
-                        return
-                else:
-                    process_request_count += 1
-                    try:
-                        handler = self.find_task_handler(result['task'])
-                    except NoTaskHandler as ex:
-                        ex.tb = format_exc()
-                        self.parser_result_queue.put((ex, result['task']))
-                        self.stat.inc('parser:handler-not-found')
-                    else:
-                        self.process_network_result(result, handler)
-                        self.stat.inc('parser:handler-processed')
-                    if self.parser_requests_per_process:                    
-                        if (process_request_count >=                        
-                                self.parser_requests_per_process):          
-                            work_permitted = False  
-        except Exception as ex:
-            logging.error('', exc_info=ex)
-            raise
-
-    def process_network_result(self, result, handler):
+    def process_network_result(self, result, task, handler):
         handler_name = getattr(handler, '__name__', 'NONE')
         try:
-            handler_result = handler(result['grab'], result['task'])
+            handler_result = handler(result['grab'], task)
             if handler_result is None:
                 pass
             else:
-                for something in handler_result:
-                    self.parser_result_queue.put((something,
-                                                  result['task']))
+                for item in handler_result:
+                    self.task_dispatcher.input_queue.put((item, task))
         except Exception as ex: # pylint: disable=broad-except
             ex.tb = format_exc()
-            self.parser_result_queue.put((ex, result['task']))
+            self.task_dispatcher.input_queue.put((ex, task))
 
     def find_task_handler(self, task):
         callback = task.get('callback')
@@ -669,19 +635,19 @@ class Spider(object):
             else:
                 return handler
 
-    def log_network_result_stats(self, res, from_cache=False):
+    def log_network_result_stats(self, res, task):
         # Increase stat counters
         self.stat.inc('spider:request-processed')
         self.stat.inc('spider:task')
-        self.stat.inc('spider:task-%s' % res['task'].name)
-        if (res['task'].network_try_count == 1 and
-                res['task'].task_try_count == 1):
-            self.stat.inc('spider:task-%s-initial' % res['task'].name)
+        self.stat.inc('spider:task-%s' % task.name)
+        if (task.network_try_count == 1 and
+                task.task_try_count == 1):
+            self.stat.inc('spider:task-%s-initial' % task.name)
 
         # Update traffic statistics
         if res['grab'] and res['grab'].doc:
             doc = res['grab'].doc
-            if from_cache:
+            if res.get('from_cache'):
                 self.stat.inc('spider:download-size-with-cache',
                               doc.download_size)
                 self.stat.inc('spider:upload-size-with-cache',
@@ -721,271 +687,72 @@ class Spider(object):
             self.stat.inc('spider:request-network')
             self.stat.inc('spider:task-%s-network' % task.name)
             try:
-                self.transport.start_task_processing(
+                self.network_service.start_task_processing(
                     task, grab, grab_config_backup)
             except GrabInvalidUrl:
                 logger.debug('Task %s has invalid URL: %s',
                              task.name, task.url)
                 self.stat.collect('invalid-url', task.url)
 
-    def start_api_thread(self):
-        from grab.spider.http_api import HttpApiThread
-
-        proc = HttpApiThread(self)
-        proc.start()
-        return proc
-
-    def is_ready_to_shutdown(self):
-        try:
-            if self.cache_service:
-                self.cache_service.pause()
-            for srv in self._task_generator_services:
-                srv.pause()
-            return (
-                not self.parser_result_queue.qsize()
-                and all(x['is_parser_idle'].is_set()
-                        for x in self.parser_service.parser_pool)
-                and not any(x.is_alive() for x
-                            in self._task_generator_services)  # (2)
-                and not self.transport.get_active_threads_number()  # (3)
-                and not self.task_queue.size()  # (4)
-                and not self.network_result_queue.qsize()  # (5)
-            )
-        finally:
-            #print('!resuming cache')
-            if self.cache_service:
-                self.cache_service.resume()
-            for srv in self._task_generator_services:
-                srv.resume()
-
     def run(self):
-        """
-        Main method. All work is done here.
-        """
-
         self._started = time.time()
-
-        if self.transport_name == 'multicurl':
-            from grab.spider.transport.multicurl import MulticurlTransport
-
-            self.transport = MulticurlTransport(self, self.thread_number)
-        elif self.transport_name == 'threaded':
-            from grab.spider.transport.threaded import ThreadedTransport
-
-            self.transport = ThreadedTransport(self, self.thread_number)
-
-        if self.http_api_port:
-            http_api_proc = self.start_api_thread()
-        else:
-            http_api_proc = None
-
-        self.parser_result_queue = Queue()
-        self.parser_service = ParserService(
-            spider=self,
-            pool_size=self.parser_pool_size,
-        )
-        self.parser_service.start()
-        network_result_queue_limit = max(10, self.thread_number * 2)
-
         try:
             self.prepare()
             if self.task_queue is None:
                 self.setup_queue()
-            self.start_task_generators()
-
-            # Work in infinite cycle untill
-            # `self.work_allowed` flag is True
-            # shutdown_countdown = 0 # !!!
-            pending_tasks = deque()
-            shutdown_countdown = 10
-            while self.work_allowed:
-                #print('!')
-                # Load new task only if:
-                # 1) network transport has free threads
-                # 2) network result queue is not full
-                # 3) cache is disabled OR cache has free resources
-                if (self.transport.get_free_threads_number()
-                        and (self.network_result_queue.qsize()
-                             < network_result_queue_limit)
-                        and (self.cache_service is None
-                             or self.cache_service.has_free_resources())):
-                    if pending_tasks:
-                        task = pending_tasks.popleft()
-                    else:
-                        task = self.get_task_from_queue()
-                        #if task and task is not True:
-                        #    print('NEW TASK: %s [delay=%s]'
-                        #          % (task, task.original_delay))
-                    #print('!asked for new task, got %s' % task)
-                    if task is None:
-                        # If received task is None then
-                        # check if spider is ready to be shut down
-                        if not pending_tasks and self.is_ready_to_shutdown():
-                            #print('!ready-to-shutdown is OK')
-                            # I am afraid there is a bug in
-                            # `is_ready_to_shutdown`
-                            # because it tries to evaluate too many things
-                            # includig things that are being set from other
-                            # threads, # so to ensure we are really ready to
-                            # shutdown # I call # is_ready_to_shutdown a few
-                            # more times.
-                            # Without this hack some times really rarely times
-                            # the Grab fails to do its job
-                            # A good way to see this bug is to disable
-                            # this hack and run:
-                            # while ./runtest.py -t test.spider_data; do \
-                            # echo "ok"; done;
-                            # And wait a few minutes
-                            # Iterate over all run body while waiting
-                            # this safety time
-                            # this is required because the code emulates async
-                            # loop # and need to check/trigger events
-                            time.sleep(0.01)
-                            shutdown_countdown -= 1
-                            if shutdown_countdown == 0:
-                                self.shutdown_event.set()
-                                self.stop()
-                                break
-                        else:
-                            shutdown_countdown = 10
-                    elif task is True:
-                        # If received task is True
-                        # and there is no active network threads then
-                        # take some sleep
-                        if not self.transport.get_active_threads_number():
-                            time.sleep(0.01)
-                    else:
-                        task.network_try_count += 1 # pylint: disable=no-member
-                        is_valid, reason = self.check_task_limits(task)
-                        if is_valid:
-                            task_grab = self.setup_grab_for_task(task)
-                            if self.cache_service:
-                                # CACHE:
-                                self.cache_service.add_task(
-                                    ('load', (task, task_grab)),
-                                )
-                                #print('!sent to cache')
-                            else:
-                                self.submit_task_to_transport(task, task_grab)
-                        else:
-                            self.log_rejected_task(task, reason)
-                            # pylint: disable=no-member
-                            handler = task.get_fallback_handler(self)
-                            # pylint: enable=no-member
-                            if handler:
-                                handler(task)
-                self.transport.process_handlers()
-
-                # Collect completed network results
-                # Each result could be valid or failed
-                # Result is dict {ok, grab, grab_config_backup, task, emsg}
-                results = [(x, False) for x in
-                           self.transport.iterate_results()]
-                #print('!network results: %s' % results)
-                if self.cache_service:
-                    # CACHE: for action, result in
-                    # self.cache_service.get_ready_results()
-                    for action, result in (self.cache_service
-                                           .get_ready_results()):
-                        #print('thing from cache: %s:%s' % (action, result))
-                        assert action in ('network_result', 'task')
-                        if action == 'network_result':
-                            results.append((result, True))
-                        elif action == 'task':
-                            task = result
-                            task_grab = self.setup_grab_for_task(task)
-                            if (self.transport.get_free_threads_number()
-                                    and (self.network_result_queue.qsize()
-                                         < network_result_queue_limit)):
-                                self.submit_task_to_transport(task, task_grab)
-                            else:
-                                pending_tasks.append(task)
-
-                # Take sleep to avoid millions of iterations per second.
-                # 1) If no results from network transport
-                # 2) If task queue is empty or if there are only delayed tasks
-                # 3) If no network activity
-                # 4) If parser result queue is empty
-                if (not results
-                        and (task is None or bool(task) is True)
-                        and not self.transport.get_active_threads_number()
-                        and not self.parser_result_queue.qsize()
-                        and (self.cache_service is None
-                             or self.cache_service.is_idle())):
-                    time.sleep(0.001)
-
-                for result, from_cache in results:
-                    #print('!processing result %s' % result)
-                    if self.cache_service and not from_cache:
-                        if result['ok']:
-                            # CACHE:
-                            self.cache_service.add_task(
-                                ('save', (result['task'], result['grab'])),
-                            )
-                    self.log_network_result_stats(
-                        result, from_cache=from_cache)
-
-                    is_valid = False
-                    if result['task'].get('raw'):
-                        is_valid = True
-                    elif result['ok']:
-                        res_code = result['grab'].doc.code
-                        if self.is_valid_network_response_code(
-                                res_code, result['task']):
-                            is_valid = True
-
-                    if is_valid:
-                        self.network_result_queue.put(result)
-                    else:
-                        self.log_failed_network_result(result)
-                        # Try to do network request one more time
-                        # TODO:
-                        # Implement valid_try_limit
-                        # Use it if request failed not because of network error
-                        # But because of content integrity check
-                        if self.network_try_limit > 0:
-                            result['task'].refresh_cache = True
-                            result['task'].setup_grab_config(
-                                result['grab_config_backup'])
-                            self.add_task(result['task'])
-                    if from_cache:
-                        self.stat.inc('spider:task-%s-cache'
-                                      % result['task'].name)
-                    self.stat.inc('spider:request')
-
-                while True:
-                    try:
-                        p_res, p_task = (self.parser_result_queue
-                                         .get(block=False))
-                    except queue.Empty:
+            self.task_dispatcher.start()
+            self.process_initial_urls()
+            task_gen = TaskGeneratorService(self.task_generator(), self)
+            task_gen.start()
+            self.task_generator_services.append(task_gen)
+            self.parser_service.start()
+            self.network_service.start()
+            services = [
+                task_gen,
+                self.task_dispatcher,
+                self.parser_service,
+                self.network_service,
+            ]
+            if self.http_api_service:
+                self.http_api_service.start()
+                services.append(self.http_api_service)
+            while True:
+                time.sleep(0.5)
+                if self.is_idle():
+                    for srv in services:
+                        srv.pause()
+                    if self.is_idle():
                         break
-                    else:
-                        self.stat.inc('spider:parser-result')
-                        self.process_handler_result(p_res, p_task)
-
-                if not self.shutdown_event.is_set():
-                    self.parser_service.check_pool_health()
+                    for srv in services:
+                        srv.resume()
         except KeyboardInterrupt:
-            logger.info('\nGot ^C signal in process %d. Stopping.',
-                        os.getpid())
             self.interrupted = True
-            raise
+            #raise
+        except Exception as ex:
+            logger.error('', exc_info=ex)
         finally:
             # This code is executed when main cycles is breaked
             self.stat.print_progress_line()
             self.shutdown()
-
-            # Stop HTTP API process
-            if http_api_proc:
-                http_api_proc.server.shutdown()
-                http_api_proc.join()
-
             if self.task_queue:
                 self.task_queue.clear()
+            logger.debug('Work done')
 
-            # Stop parser processes
-            self.shutdown_event.set()
-            logger.debug('Main process [pid=%s]: work done', os.getpid())
+    def is_idle(self):
+        result = (
+            not self.task_queue.size()
+            and not self.task_dispatcher.input_queue.qsize()
+            and not self.parser_service.input_queue.qsize()
+            and not self.parser_service.is_busy()
+            and not self.network_service.get_active_threads_number()
+            and not self.network_service.is_busy()
+        )
+        if result and self.cache_reader_service:
+            result = result and (
+                not self.cache_reader_service.input_queue.qsize()
+                and not self.cache_writer_service.input_queue.qsize()
+            )
+        return result
 
     def log_failed_network_result(self, res):
         # Log the error
@@ -1010,19 +777,25 @@ class Spider(object):
                               'check_task_limits: %s'
                               % reason)
 
-    def process_handler_result(self, result, task):
+    def process_service_result(self, result, task, meta):
         """
-        Process result received from the task handler.
+        Process result submitted from any service to task dispatcher service.
 
         Result could be:
+        * Task
         * None
         * Task instance
         * ResponseNotValid-based exception
         * Arbitrary exception
+        * Network response:
+            {ok, ecode, emsg, error_abbr, exc, grab, grab_config_backup}
         """
 
         if isinstance(result, Task):
-            self.add_task(result)
+            if meta.get('source') == 'cache_reader':
+                self.add_task(result, queue=self.cache_reader.input_queue)
+            else:
+                self.add_task(result)
         elif result is None:
             pass
         elif isinstance(result, ResponseNotValid):
@@ -1032,6 +805,42 @@ class Spider(object):
         elif isinstance(result, Exception):
             handler = self.find_task_handler(task)
             handler_name = getattr(handler, '__name__', 'NONE')
-            self.process_handler_error(handler_name, result, task)
+            self.process_parser_error(handler_name, result, task)
+        elif isinstance(result, dict) and 'grab' in result:
+            if (self.cache_writer_service
+                and not result.get('from_cache')
+                and result['ok']
+            ):
+                self.cache_writer_service.input_queue.put(
+                    (task, result['grab'])
+                )
+            self.log_network_result_stats(result, task)
+            is_valid = False
+            if task.get('raw'):
+                is_valid = True
+            elif result['ok']:
+                res_code = result['grab'].doc.code
+                is_valid = self.is_valid_network_response_code(
+                        res_code, task
+                )
+            if is_valid:
+                self.parser_service.input_queue.put((result, task))
+            else:
+                self.log_failed_network_result(result)
+                # Try to do network request one more time
+                # TODO:
+                # Implement valid_try_limit
+                # Use it if request failed not because of network error
+                # But because of content integrity check
+                if self.network_try_limit > 0:
+                    task.refresh_cache = True
+                    task.setup_grab_config(
+                        result['grab_config_backup'])
+                    self.add_task(task)
+            if result.get('from_cache'):
+                self.stat.inc('spider:task-%s-cache'
+                                     % task.name)
+            self.stat.inc('spider:request')
+            return True
         else:
             raise SpiderError('Unknown result type: %s' % result)

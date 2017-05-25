@@ -7,8 +7,10 @@ from six.moves.SimpleHTTPServer import SimpleHTTPRequestHandler
 from six.moves.socketserver import TCPServer
 from weblib.encoding import make_str
 
+from grab.spider.base_service import BaseService
+
 # pylint: disable=invalid-name
-logger = logging.getLogger('grab.spider.http_api')
+logger = logging.getLogger('grab.spider.http_api_service')
 # pylint: enable=invalid-name
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 
@@ -59,16 +61,22 @@ class ReuseTCPServer(TCPServer):
     allow_reuse_address = True
 
 
-class HttpApiThread(threading.Thread):
-    def __init__(self, spider, *args, **kwargs):
+class HttpApiService(BaseService):
+    def __init__(self, spider):
         self.spider = spider
-        self.server = None
-        super(HttpApiThread, self).__init__(*args, **kwargs)
+        self.worker = self.create_worker(self.worker_callback)
+        self.register_workers(self.worker)
 
-    def run(self):
+    def pause(self):
+        return
+
+    def resume(self):
+        return
+
+    def worker_callback(self, worker):
         ApiHandler.spider = self.spider
-        self.server = ReuseTCPServer(("", self.spider.http_api_port),
+        server = ReuseTCPServer(("", self.spider.http_api_port),
                                      ApiHandler)
         logging.debug('Serving HTTP API on localhost:%d',
                       self.spider.http_api_port)
-        self.server.serve_forever()
+        server.serve_forever()
