@@ -8,12 +8,16 @@ class ServiceWorker(object):
         self.thread = Thread(target=worker_callback, args=[self])
         self.thread.daemon = True
         self.pause_event = Event()
+        self.stop_event = Event()
         self.resume_event = Event()
         self.activity_paused = Event()
         self.is_busy_event = Event()
 
     def start(self):
         self.thread.start()
+
+    def stop(self):
+        self.stop_event.set()
 
     def process_pause_signal(self):
         if self.pause_event.is_set():
@@ -55,6 +59,10 @@ class BaseService(object):
         for worker in self.iterate_workers(self.worker_registry):
             worker.start()
 
+    def stop(self):
+        for worker in self.iterate_workers(self.worker_registry):
+            worker.stop()
+
     def pause(self):
         for worker in self.iterate_workers(self.worker_registry):
             worker.pause()
@@ -70,4 +78,8 @@ class BaseService(object):
 
     def is_busy(self):
         return any(x.is_busy_event.is_set() for x in
+                   self.iterate_workers(self.worker_registry))
+
+    def is_alive(self):
+        return any(x.is_alive() for x in
                    self.iterate_workers(self.worker_registry))

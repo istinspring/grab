@@ -51,13 +51,13 @@ class NetworkServiceMulticurl(BaseService):
         self.register_workers(self.spawner, self.async_loop)
 
     def async_loop_callback(self, worker):
-        while True:
+        while not worker.stop_event.is_set():
             worker.process_pause_signal()
             self.process_handlers()
             time.sleep(0.01)
 
     def spawner_callback(self, worker):
-        while True:
+        while not worker.stop_event.is_set():
             worker.process_pause_signal()
             if self.get_free_threads_number():
                 task = self.spider.get_task_from_queue()

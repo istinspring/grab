@@ -25,7 +25,7 @@ class CacheServiceBase(BaseService):
 class CacheReaderService(CacheServiceBase):
     def worker_callback(self, worker):
         try:
-            while True:
+            while not worker.stop_event.is_set():
                 worker.process_pause_signal()
                 try:
                     task = self.input_queue.get(True, 0.1)
@@ -80,7 +80,7 @@ class CacheReaderService(CacheServiceBase):
 class CacheWriterService(CacheServiceBase):
     def worker_callback(self, worker):
         try:
-            while True:
+            while not worker.stop_event.is_set():
                 worker.process_pause_signal()
                 try:
                     task, grab = self.input_queue.get(True, 0.1)

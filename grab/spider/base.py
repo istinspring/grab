@@ -218,7 +218,6 @@ class Spider(object):
         self.proxy_auto_change = False
         self.interrupted = False
 
-        self.task_generator_services = []
         self.cache_reader_service = None
         self.cache_writer_service = None
         self.parser_pool_size = parser_pool_size
@@ -245,6 +244,10 @@ class Spider(object):
             self.http_api_service = HttpApiService(self)
         else:
             self.http_api_service = None
+
+        self.task_generator_service = TaskGeneratorService(
+            self.task_generator(), self,
+        )
 
     def setup_cache(self, backend='mongodb', database=None, use_compression=True,
                     **kwargs):
@@ -342,6 +345,7 @@ class Spider(object):
         This method set internal flag which signal spider
         to stop processing new task and shuts down.
         """
+        print('Spider.stop() method called')
         self.work_allowed = False
 
     def load_proxylist(self, source, source_type=None, proxy_type='http',
@@ -692,27 +696,22 @@ class Spider(object):
 
     def run(self):
         self._started = time.time()
+        services = []
         try:
             self.prepare()
             if self.task_queue is None:
                 self.setup_queue()
-            self.task_dispatcher.start()
-            self.process_initial_urls()
-            task_gen = TaskGeneratorService(self.task_generator(), self)
-            task_gen.start()
-            self.task_generator_services.append(task_gen)
-            self.parser_service.start()
-            self.network_service.start()
             services = [
-                task_gen,
                 self.task_dispatcher,
+                self.task_generator_service,
                 self.parser_service,
                 self.network_service,
             ]
             if self.http_api_service:
                 self.http_api_service.start()
-                services.append(self.http_api_service)
-            while True:
+            for srv in services:
+                srv.start()
+            while self.work_allowed:
                 time.sleep(0.5)
                 if self.is_idle():
                     for srv in services:
@@ -727,7 +726,18 @@ class Spider(object):
         except Exception as ex:
             logger.error('', exc_info=ex)
         finally:
-            # This code is executed when main cycles is breaked
+            print('Start stopping services')
+            for srv in services:
+                srv.stop()
+            print('Called .stop() for all services')
+            start = time.time()
+            while any(x.is_alive() for x in services):
+                time.sleep(0.1)
+                if time.time() - start > 2:
+                    break
+            for srv in services:
+                if srv.is_alive():
+                    print('The %s is not stopped :(' % srv)
             self.stat.print_progress_line()
             self.shutdown()
             if self.task_queue:
@@ -736,7 +746,8 @@ class Spider(object):
 
     def is_idle(self):
         result = (
-            not self.task_queue.size()
+            not self.task_generator_service.is_alive()
+            and not self.task_queue.size()
             and not self.task_dispatcher.input_queue.qsize()
             and not self.parser_service.input_queue.qsize()
             and not self.parser_service.is_busy()

@@ -32,7 +32,7 @@ class ParserService(BaseService):
             self.workers_pool.remove(worker)
 
     def supervisor_callback(self, worker):
-        while True:
+        while not worker.stop_event.is_set():
             worker.process_pause_signal()
             self.check_pool_health()
             time.sleep(1)
@@ -40,8 +40,7 @@ class ParserService(BaseService):
     def worker_callback(self, worker):
         process_request_count = 0
         try:
-            work_permitted = True
-            while work_permitted:
+            while not worker.stop_event.is_set():
                 worker.process_pause_signal()
                 try:
                     result, task = self.input_queue.get(True, 0.1)
@@ -55,7 +54,9 @@ class ParserService(BaseService):
                             handler = self.spider.find_task_handler(task)
                         except NoTaskHandler as ex:
                             ex.tb = format_exc()
-                            self.spider.task_dispatcher.input_queue.put((ex, task))
+                            self.spider.task_dispatcher.input_queue.put(
+                                (ex, task)
+                            )
                             self.spider.stat.inc('parser:handler-not-found')
                         else:
                             self.spider.process_network_result(
@@ -65,7 +66,10 @@ class ParserService(BaseService):
                         if self.spider.parser_requests_per_process:                    
                             if (process_request_count >=                        
                                     self.spider.parser_requests_per_process):          
-                                work_permitted = False  
+                                self.spider.stat.inc(
+                                    'parser:handler-req-limit',
+                                )
+                                return
                     finally:
                         worker.is_busy_event.clear()
         except Exception as ex:

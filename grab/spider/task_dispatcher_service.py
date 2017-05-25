@@ -17,7 +17,7 @@ class TaskDispatcherService(BaseService):
         self.worker.start()
 
     def worker_callback(self, worker):
-        while True:
+        while not worker.stop_event.is_set():
             worker.process_pause_signal()
             try:
                 item = self.input_queue.get(True, 0.1)
