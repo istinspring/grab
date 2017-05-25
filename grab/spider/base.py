@@ -134,7 +134,6 @@ class Spider(object):
         args=None,
         # New options start here
         taskq=None,
-        # MP:
         parser_requests_per_process=10000,
         parser_pool_size=1,
         # http api
@@ -161,9 +160,6 @@ class Spider(object):
         * retry_rebuild_user_agent - generate new random user-agent for each
             network request which is performed again due to network error
         * args - command line arguments parsed with `setup_arg_parser` method
-        New options:
-        * taskq=None,
-        * newtork_response_queue=None,
         """
 
         # API:
@@ -174,7 +170,7 @@ class Spider(object):
         self.parser_requests_per_process = parser_requests_per_process
 
         self.stat = Stat()
-        self.task_queue = taskq
+        self.task_queue = None
 
         if args is None:
             self.args = {}
@@ -246,7 +242,7 @@ class Spider(object):
         self.task_dispatcher = TaskDispatcherService(self)
 
         if self.http_api_port:
-            self.http_api_service = HttpApiService()
+            self.http_api_service = HttpApiService(self)
         else:
             self.http_api_service = None
 
