@@ -1,11 +1,14 @@
 import logging
 from threading import Thread, Event
 import time
+from traceback import format_exc
+import sys
 
 from six.moves.queue import Queue
 from six.moves import queue
 
 from grab.spider.base_service import BaseService
+from grab.spider.error import NoTaskHandler
 
 
 class ParserService(BaseService):
@@ -23,7 +26,7 @@ class ParserService(BaseService):
         to_remove = []
         for worker in self.workers_pool:
             if not worker.is_alive():
-                self.spider.stat.inc('parser-thread-restore')
+                self.spider.stat.inc('parser-worker-restarted')
                 new_worker = self.create_worker(self.worker_callback)
                 self.workers_pool.append(new_worker)
                 new_worker.start()
@@ -39,39 +42,48 @@ class ParserService(BaseService):
 
     def worker_callback(self, worker):
         process_request_count = 0
-        try:
-            while not worker.stop_event.is_set():
-                worker.process_pause_signal()
+        while not worker.stop_event.is_set():
+            worker.process_pause_signal()
+            try:
+                result, task = self.input_queue.get(True, 0.1)
+            except queue.Empty:
+                pass
+            else:
+                worker.is_busy_event.set()
                 try:
-                    result, task = self.input_queue.get(True, 0.1)
-                except queue.Empty:
-                    pass
-                else:
-                    worker.is_busy_event.set()
+                    process_request_count += 1
                     try:
-                        process_request_count += 1
-                        try:
-                            handler = self.spider.find_task_handler(task)
-                        except NoTaskHandler as ex:
-                            ex.tb = format_exc()
-                            self.spider.task_dispatcher.input_queue.put(
-                                (ex, task)
+                        handler = self.spider.find_task_handler(task)
+                    except NoTaskHandler as ex:
+                        ex.tb = format_exc()
+                        self.spider.task_dispatcher.input_queue.put(
+                            (ex, task, {'exc_info': sys.exc_info()})
+                        )
+                        self.spider.stat.inc('parser:handler-not-found')
+                    else:
+                        self.execute_task_handler(handler, result, task)
+                        self.spider.stat.inc('parser:handler-processed')
+                    if self.spider.parser_requests_per_process:                    
+                        if (process_request_count >=                        
+                                self.spider.parser_requests_per_process):          
+                            self.spider.stat.inc(
+                                'parser:handler-req-limit',
                             )
-                            self.spider.stat.inc('parser:handler-not-found')
-                        else:
-                            self.spider.process_network_result(
-                                result, task, handler,
-                            )
-                            self.spider.stat.inc('parser:handler-processed')
-                        if self.spider.parser_requests_per_process:                    
-                            if (process_request_count >=                        
-                                    self.spider.parser_requests_per_process):          
-                                self.spider.stat.inc(
-                                    'parser:handler-req-limit',
-                                )
-                                return
-                    finally:
-                        worker.is_busy_event.clear()
-        except Exception as ex:
-            logging.error('', exc_info=ex)
-            raise
+                            return
+                finally:
+                    worker.is_busy_event.clear()
+
+    def execute_task_handler(self, handler, result, task):
+        handler_name = getattr(handler, '__name__', 'NONE')
+        try:
+            handler_result = handler(result['grab'], task)
+            if handler_result is None:
+                pass
+            else:
+                for item in handler_result:
+                    self.spider.task_dispatcher.input_queue.put((item, task))
+        except Exception as ex: # pylint: disable=broad-except
+            self.spider.task_dispatcher.input_queue.put((ex, task, {
+                'exc_info': sys.exc_info(),
+                'from': 'parser',
+            }))

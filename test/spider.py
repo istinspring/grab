@@ -117,18 +117,6 @@ class BasicSpiderTestCase(BaseGrabTestCase):
         bot.add_task(Task('page', url=self.server.get_url()))
         bot.run()
 
-    # FIXME: DOES NOT WORK
-    #def test_keyboard_interrupt(self):
-    #    class TestSpider(Spider):
-    #        def task_page(self, grab, task):
-    #            os.kill(os.getpid(), signal.SIGINT)
-
-    #    bot = build_spider(TestSpider)
-    #    bot.setup_queue()
-    #    bot.add_task(Task('page', url=self.server.get_url()))
-    #    bot.run()
-    #    self.assertTrue(bot.interrupted)
-
     def test_fallback_handler_by_default_name(self):
         class TestSpider(Spider):
             def prepare(self):
@@ -215,20 +203,10 @@ class BasicSpiderTestCase(BaseGrabTestCase):
             def task_page(self, unused_grab, unused_task):
                 self.stop()
 
-            def task_keyboard_interrupt_page(self, unused_grab, unused_task):
-                raise KeyboardInterrupt
-
         bot = build_spider(TestSpider)
         bot.setup_queue()
         for _ in six.moves.range(5):
             bot.add_task(Task('page', url=self.server.get_url()))
-        self.assertEqual(5, bot.task_queue.size())
-        bot.run()
-        self.assertEqual(0, bot.task_queue.size())
-
-        for _ in six.moves.range(5):
-            bot.add_task(Task('keyboard_interrupt_page',
-                              url=self.server.get_url()))
         self.assertEqual(5, bot.task_queue.size())
         bot.run()
         self.assertEqual(0, bot.task_queue.size())

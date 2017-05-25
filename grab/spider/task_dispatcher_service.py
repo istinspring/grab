@@ -1,5 +1,7 @@
 from threading import Thread, Event
 import time
+import sys
+import logging
 
 from six.moves.queue import Empty, Queue
 

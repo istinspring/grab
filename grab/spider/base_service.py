@@ -1,17 +1,31 @@
 import time
 from threading import Thread, Event
 import logging
+import sys
 
 
 class ServiceWorker(object):
-    def __init__(self, worker_callback):
-        self.thread = Thread(target=worker_callback, args=[self])
+    def __init__(self, spider, worker_callback):
+        self.spider = spider
+        self.thread = Thread(
+            target=self.worker_callback_wrapper(worker_callback),
+            args=[self]
+        )
         self.thread.daemon = True
         self.pause_event = Event()
         self.stop_event = Event()
         self.resume_event = Event()
         self.activity_paused = Event()
         self.is_busy_event = Event()
+
+    def worker_callback_wrapper(self, callback):
+        def wrapper(*args, **kwargs):
+            try:
+                callback(*args, **kwargs)
+            except Exception as ex:
+                #logging.error('', exc_info=ex)
+                self.spider.fatal_error_queue.put((ex, sys.exc_info()))
+        return wrapper
 
     def start(self):
         self.thread.start()
@@ -44,7 +58,7 @@ class ServiceWorker(object):
 
 class BaseService(object):
     def create_worker(self, worker_action):
-        return ServiceWorker(worker_action)
+        return ServiceWorker(self.spider, worker_action)
 
     def iterate_workers(self, objects):
         for obj in objects:
@@ -66,12 +80,12 @@ class BaseService(object):
     def pause(self):
         for worker in self.iterate_workers(self.worker_registry):
             worker.pause()
-        logging.debug('Service %s paused' % self.__class__.__name__)
+        #logging.debug('Service %s paused' % self.__class__.__name__)
 
     def resume(self):
         for worker in self.iterate_workers(self.worker_registry):
             worker.resume()
-        logging.debug('Service %s resumed' % self.__class__.__name__)
+        #logging.debug('Service %s resumed' % self.__class__.__name__)
 
     def register_workers(self, *args):
         self.worker_registry = args 

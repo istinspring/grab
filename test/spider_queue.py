@@ -39,7 +39,6 @@ class SpiderQueueMixin(object):
         self.assertEqual(5, bot.task_queue.size())
         bot.run()
         self.assertEqual(0, bot.task_queue.size())
-        bot.run()
 
     def test_task_queue_render_stats(self):
         bot = build_spider(self.SimpleSpider)

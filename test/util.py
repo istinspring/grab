@@ -59,7 +59,7 @@ def build_grab(*args, **kwargs):
 def build_spider(cls, **kwargs):
     """Builds the Spider instance with default options."""
     kwargs.setdefault('grab_transport', GLOBAL['grab_transport'])
-    kwargs.setdefault('transport', GLOBAL['spider_transport'])
+    kwargs.setdefault('network_service', GLOBAL['spider_transport'])
     return cls(**kwargs)
 
 

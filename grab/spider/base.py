@@ -6,12 +6,13 @@ import time
 from random import randint
 from copy import deepcopy
 import os
-from traceback import format_exc
+from traceback import format_exc, format_exception
 from datetime import datetime
 from threading import Thread
 from collections import deque
 from threading import Event
 from six.moves.queue import Queue
+import sys
 
 from six.moves import queue
 import six
@@ -164,29 +165,24 @@ class Spider(object):
 
         # API:
         self.http_api_port = http_api_port
-
+        self._started = None
         assert grab_transport in ('pycurl', 'urllib3')
         self.grab_transport_name = grab_transport
         self.parser_requests_per_process = parser_requests_per_process
-
         self.stat = Stat()
         self.task_queue = None
-
         if args is None:
             self.args = {}
         else:
             self.args = args
-
         if config is not None:
             self.config = config
         else:
             self.config = {}
-
         if meta:
             self.meta = meta
         else:
             self.meta = {}
-
         self.thread_number = (
             thread_number or
             int(self.config.get('thread_number',
@@ -198,26 +194,22 @@ class Spider(object):
             network_try_limit or
             int(self.config.get('network_try_limit',
                                 DEFAULT_NETWORK_TRY_LIMIT)))
-
         self._grab_config = {}
         if priority_mode not in ['random', 'const']:
             raise SpiderMisuseError('Value of priority_mode option should be '
                                     '"random" or "const"')
         else:
             self.priority_mode = priority_mode
-
         self.only_cache = only_cache
         self.work_allowed = True
         if request_pause is not NULL:
             warn('Option `request_pause` is deprecated and is not '
                  'supported anymore')
-
         self.proxylist_enabled = None
         self.proxylist = None
         self.proxy = None
         self.proxy_auto_change = False
         self.interrupted = False
-
         self.cache_reader_service = None
         self.cache_writer_service = None
         self.parser_pool_size = parser_pool_size
@@ -225,7 +217,6 @@ class Spider(object):
             spider=self,
             pool_size=self.parser_pool_size,
         )
-
         if transport is not None:
             warn('The "transport" argument of Spider constructor is deprecated.'
                  ' Use "network_service" argument.')
@@ -237,14 +228,11 @@ class Spider(object):
         elif network_service == 'threaded':
             from grab.spider.network_service.threaded import NetworkServiceThreaded
             self.network_service = NetworkServiceThreaded(self, self.thread_number)
-
         self.task_dispatcher = TaskDispatcherService(self)
-
         if self.http_api_port:
             self.http_api_service = HttpApiService(self)
         else:
             self.http_api_service = None
-
         self.task_generator_service = TaskGeneratorService(
             self.task_generator(), self,
         )
@@ -345,7 +333,6 @@ class Spider(object):
         This method set internal flag which signal spider
         to stop processing new task and shuts down.
         """
-        print('Spider.stop() method called')
         self.work_allowed = False
 
     def load_proxylist(self, source, source_type=None, proxy_type='http',
@@ -421,7 +408,10 @@ class Spider(object):
             self.add_task(task2)
             return True
 
-    def render_stats(self, timing=True):
+    def render_stats(self, timing=None):
+        if timing is not None:
+            warn('Option timing of method render_stats is deprecated.'
+                 ' There is no more timing feature.')
         out = ['------------ Stats: ------------']
         out.append('Counters:')
 
@@ -448,17 +438,16 @@ class Spider(object):
         out.append('Queue size: %d' % self.task_queue.size()
                    if self.task_queue else 'NA')
         out.append('Network streams: %d' % self.thread_number)
-        elapsed = time.time() - self._started
+        if self._started:
+            elapsed = time.time() - self._started
+        else:
+            elapsed = 0
         hours, seconds = divmod(elapsed, 3600)
         minutes, seconds = divmod(seconds, 60)
         out.append('Time elapsed: %d:%d:%d (H:M:S)' % (
             hours, minutes, seconds))
         out.append('End time: %s' %
                    datetime.utcnow().strftime('%d %b %Y, %H:%M:%S UTC'))
-
-        if timing:
-            out.append('')
-            out.append(self.render_timing())
         return '\n'.join(out) + '\n'
 
     # ********************************
@@ -581,14 +570,12 @@ class Spider(object):
         return (code < 400 or code == 404 or
                 code in task.valid_status)
 
-    def process_parser_error(self, func_name, ex, task):
+    def process_parser_error(self, func_name, task, exc_info):
+        _, ex, tb = exc_info
         self.stat.inc('spider:error-%s' % ex.__class__.__name__.lower())
 
-        if hasattr(ex, 'tb'):
-            logger.error('Error in %s function', func_name)
-            logger.error(ex.tb)
-        else:
-            logger.error('Error in %s function', func_name, exc_info=ex)
+        logger.error('Error in task handler [%s]', func_name)
+        logger.error(''.join(format_exception(*exc_info)))
 
         # Looks strange but I really have some problems with
         # serializing exception into string
@@ -600,27 +587,10 @@ class Spider(object):
             except TypeError:
                 ex_str = str(ex)
 
-        task_url = task.url if task is not None else None
+        task_url = task.url if task else None
         self.stat.collect('fatal', '%s|%s|%s|%s' % (
-            func_name, ex.__class__.__name__, ex_str, task_url))
-        if isinstance(ex, FatalError):
-            # raise FatalError()
-            # six.reraise(FatalError, ex)
-            # logger.error(ex.tb)
-            raise ex
-
-    def process_network_result(self, result, task, handler):
-        handler_name = getattr(handler, '__name__', 'NONE')
-        try:
-            handler_result = handler(result['grab'], task)
-            if handler_result is None:
-                pass
-            else:
-                for item in handler_result:
-                    self.task_dispatcher.input_queue.put((item, task))
-        except Exception as ex: # pylint: disable=broad-except
-            ex.tb = format_exc()
-            self.task_dispatcher.input_queue.put((ex, task))
+            func_name, ex.__class__.__name__, ex_str, task_url
+        ))
 
     def find_task_handler(self, task):
         callback = task.get('callback')
@@ -698,6 +668,7 @@ class Spider(object):
         self._started = time.time()
         services = []
         try:
+            self.fatal_error_queue = Queue()
             self.prepare()
             if self.task_queue is None:
                 self.setup_queue()
@@ -712,7 +683,13 @@ class Spider(object):
             for srv in services:
                 srv.start()
             while self.work_allowed:
-                time.sleep(0.5)
+                try:
+                    exc_info = self.fatal_error_queue.get(True, 0.5)
+                except queue.Empty:  
+                    pass
+                else:
+                    #logger.error('', exc_info=exc_info)
+                    raise exc_info[1]
                 if self.is_idle():
                     for srv in services:
                         srv.pause()
@@ -722,18 +699,21 @@ class Spider(object):
                         srv.resume()
         except KeyboardInterrupt:
             self.interrupted = True
-            #raise
+            raise
         except Exception as ex:
-            logger.error('', exc_info=ex)
+            raise
         finally:
-            print('Start stopping services')
+            #print('Start stopping services')
             for srv in services:
+                # Resume service if it has been paused
+                # to allow service to process stop signal
+                srv.resume()
                 srv.stop()
-            print('Called .stop() for all services')
+            #print('Called .stop() for all services')
             start = time.time()
             while any(x.is_alive() for x in services):
                 time.sleep(0.1)
-                if time.time() - start > 2:
+                if time.time() - start > 1:
                     break
             for srv in services:
                 if srv.is_alive():
@@ -762,15 +742,11 @@ class Spider(object):
         return result
 
     def log_failed_network_result(self, res):
-        # Log the error
         if res['ok']:
             msg = 'http-%s' % res['grab'].doc.code
         else:
             msg = res['error_abbr']
-
         self.stat.inc('error:%s' % msg)
-        # logger.error(u'Network error: %s' % msg)#%
-        # make_unicode(msg, errors='ignore'))
 
     def log_rejected_task(self, task, reason):
         if reason == 'task-try-count':
@@ -796,6 +772,9 @@ class Spider(object):
         * Arbitrary exception
         * Network response:
             {ok, ecode, emsg, error_abbr, exc, grab, grab_config_backup}
+
+        Exception can come only from parser_service and it always has
+        meta {"from": "parser", "exc_info": <...>}
         """
 
         if isinstance(result, Task):
@@ -810,9 +789,14 @@ class Spider(object):
             error_code = result.__class__.__name__.replace('_', '-')
             self.stat.inc('integrity:%s' % error_code)
         elif isinstance(result, Exception):
-            handler = self.find_task_handler(task)
-            handler_name = getattr(handler, '__name__', 'NONE')
-            self.process_parser_error(handler_name, result, task)
+            if task:
+                handler = self.find_task_handler(task)
+                handler_name = getattr(handler, '__name__', 'NONE')
+            else:
+                handler_name = 'NA'
+            self.process_parser_error(handler_name, task, meta['exc_info'])
+            if isinstance(result, FatalError):
+                self.fatal_error_queue.put(meta['exc_info'])
         elif isinstance(result, dict) and 'grab' in result:
             if (self.cache_writer_service
                 and not result.get('from_cache')
