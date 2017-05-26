@@ -73,21 +73,20 @@ class CacheBackend(object):
         """
 
         _hash = self.build_hash(url)
-        with self.spider.timer.log_time('cache.read.postgresql_query'):
-            self.cursor.execute('BEGIN')
-            if timeout is None:
-                query = ""
-            else:
-                moment = int(time.time()) - timeout
-                query = " AND timestamp > %d" % moment
-            sql = '''
-                  SELECT data
-                  FROM cache
-                  WHERE id = %%s %(query)s
-                  ''' % {'query': query}
-            self.cursor.execute(sql, (_hash,))
-            row = self.cursor.fetchone()
-            self.cursor.execute('COMMIT')
+        self.cursor.execute('BEGIN')
+        if timeout is None:
+            query = ""
+        else:
+            moment = int(time.time()) - timeout
+            query = " AND timestamp > %d" % moment
+        sql = '''
+              SELECT data
+              FROM cache
+              WHERE id = %%s %(query)s
+              ''' % {'query': query}
+        self.cursor.execute(sql, (_hash,))
+        row = self.cursor.fetchone()
+        self.cursor.execute('COMMIT')
         if row:
             data = row[0]
             return self.unpack_database_value(data)
@@ -95,14 +94,12 @@ class CacheBackend(object):
             return None
 
     def unpack_database_value(self, val):
-        with self.spider.timer.log_time('cache.read.unpack_data'):
-            dump = zlib.decompress(val)
-            return marshal.loads(dump)
+        dump = zlib.decompress(val)
+        return marshal.loads(dump)
 
     def build_hash(self, url):
-        with self.spider.timer.log_time('cache.read.build_hash'):
-            utf_url = make_str(url)
-            return sha1(utf_url).hexdigest()
+        utf_url = make_str(url)
+        return sha1(utf_url).hexdigest()
 
     def remove_cache_item(self, url):
         _hash = self.build_hash(url)
@@ -178,19 +175,18 @@ class CacheBackend(object):
         """
 
         _hash = self.build_hash(url)
-        with self.spider.timer.log_time('cache.read.postgresql_query'):
-            if timeout is None:
-                query = ""
-            else:
-                moment = int(time.time()) - timeout
-                query = " AND timestamp > %d" % moment
-            self.cursor.execute('''
-                SELECT id
-                FROM cache
-                WHERE id = %%s %(query)s
-                LIMIT 1
-                ''' % {'query': query}, (_hash,))
-            row = self.cursor.fetchone()
+        if timeout is None:
+            query = ""
+        else:
+            moment = int(time.time()) - timeout
+            query = " AND timestamp > %d" % moment
+        self.cursor.execute('''
+            SELECT id
+            FROM cache
+            WHERE id = %%s %(query)s
+            LIMIT 1
+            ''' % {'query': query}, (_hash,))
+        row = self.cursor.fetchone()
         return True if row else False
 
     def size(self):

@@ -15,7 +15,7 @@ import pymongo
 from grab.spider.queue_backend.base import QueueInterface
 
 # pylint: disable=invalid-name
-logger = logging.getLogger('grab.spider.queue_backend.mongo')
+logger = logging.getLogger('grab.spider.queue_backend.mongodb')
 # pylint: enable=invalid-name
 
 

@@ -6,7 +6,7 @@ import time
 from random import randint
 from copy import deepcopy
 import os
-from traceback import format_exc, format_exception
+from traceback import format_exc, format_exception, format_tb
 from datetime import datetime
 from threading import Thread
 from collections import deque
@@ -163,7 +163,8 @@ class Spider(object):
         * args - command line arguments parsed with `setup_arg_parser` method
         """
 
-        # API:
+        self.fatal_error_queue = Queue()
+        self.task_queue_parameters = None
         self.http_api_port = http_api_port
         self._started = None
         assert grab_transport in ('pycurl', 'urllib3')
@@ -237,7 +238,7 @@ class Spider(object):
             self.task_generator(), self,
         )
 
-    def setup_cache(self, backend='mongodb', database=None, use_compression=True,
+    def setup_cache(self, backend='mongodb', database=None,
                     **kwargs):
         """
         Setup cache.
@@ -258,7 +259,6 @@ class Spider(object):
                          globals(), locals(), ['foo'])
         backend = mod.CacheBackend(
             database=database,
-            use_compression=use_compression,
             spider=self,
             **kwargs
         )
@@ -275,6 +275,9 @@ class Spider(object):
             Should be one of the following: 'memory', 'redis' or 'mongo'.
         :param kwargs: Additional credentials for backend.
         """
+        if backend == 'mongo':
+            warn('Backend name "mongo" is deprecated. Use "mongodb" instead.')
+            backend = 'mongodb'
         logger.debug('Using %s backend for task queue', backend)
         mod = __import__('grab.spider.queue_backend.%s' % backend,
                          globals(), locals(), ['foo'])
@@ -291,7 +294,7 @@ class Spider(object):
                 queue = self.cache_reader_service.input_queue
             else:
                 queue = self.task_queue
-        if self.task_queue is None:
+        if queue is None:
             raise SpiderMisuseError('You should configure task queue before '
                                     'adding tasks. Use `setup_queue` method.')
         if task.priority is None or not task.priority_set_explicitly:
@@ -321,11 +324,7 @@ class Spider(object):
 
         # TODO: keep original task priority if it was set explicitly
         # WTF the previous comment means?
-        from queue import Queue
-        if isinstance(queue, Queue):
-            queue.put(task, task.priority)
-        else:
-            queue.put(task, task.priority, schedule_time=task.schedule_time)
+        queue.put(task, priority=task.priority, schedule_time=task.schedule_time)
         return True
 
     def stop(self):
@@ -574,8 +573,11 @@ class Spider(object):
         _, ex, tb = exc_info
         self.stat.inc('spider:error-%s' % ex.__class__.__name__.lower())
 
-        logger.error('Error in task handler [%s]', func_name)
-        logger.error(''.join(format_exception(*exc_info)))
+        logger.error(
+            'Task handler [%s] error\n%s',
+            func_name,
+            ''.join(format_exception(*exc_info)),
+        )
 
         # Looks strange but I really have some problems with
         # serializing exception into string
@@ -668,7 +670,6 @@ class Spider(object):
         self._started = time.time()
         services = []
         try:
-            self.fatal_error_queue = Queue()
             self.prepare()
             if self.task_queue is None:
                 self.setup_queue()
@@ -688,7 +689,9 @@ class Spider(object):
                 except queue.Empty:  
                     pass
                 else:
-                    #logger.error('', exc_info=exc_info)
+                    logger.error('Fatal spider error', exc_info=exc_info)
+                    #print(exc_info)
+                    #print(''.join(format_tb(exc_info[2])))
                     raise exc_info[1]
                 if self.is_idle():
                     for srv in services:
@@ -736,7 +739,7 @@ class Spider(object):
         )
         if result and self.cache_reader_service:
             result = result and (
-                not self.cache_reader_service.input_queue.qsize()
+                not self.cache_reader_service.input_queue.size()
                 and not self.cache_writer_service.input_queue.qsize()
             )
         return result
@@ -759,79 +762,3 @@ class Spider(object):
             raise SpiderError('Unknown response from '
                               'check_task_limits: %s'
                               % reason)
-
-    def process_service_result(self, result, task, meta):
-        """
-        Process result submitted from any service to task dispatcher service.
-
-        Result could be:
-        * Task
-        * None
-        * Task instance
-        * ResponseNotValid-based exception
-        * Arbitrary exception
-        * Network response:
-            {ok, ecode, emsg, error_abbr, exc, grab, grab_config_backup}
-
-        Exception can come only from parser_service and it always has
-        meta {"from": "parser", "exc_info": <...>}
-        """
-
-        if isinstance(result, Task):
-            if meta.get('source') == 'cache_reader':
-                self.add_task(result, queue=self.cache_reader.input_queue)
-            else:
-                self.add_task(result)
-        elif result is None:
-            pass
-        elif isinstance(result, ResponseNotValid):
-            self.add_task(task.clone(refresh_cache=True))
-            error_code = result.__class__.__name__.replace('_', '-')
-            self.stat.inc('integrity:%s' % error_code)
-        elif isinstance(result, Exception):
-            if task:
-                handler = self.find_task_handler(task)
-                handler_name = getattr(handler, '__name__', 'NONE')
-            else:
-                handler_name = 'NA'
-            self.process_parser_error(handler_name, task, meta['exc_info'])
-            if isinstance(result, FatalError):
-                self.fatal_error_queue.put(meta['exc_info'])
-        elif isinstance(result, dict) and 'grab' in result:
-            if (self.cache_writer_service
-                and not result.get('from_cache')
-                and result['ok']
-            ):
-                self.cache_writer_service.input_queue.put(
-                    (task, result['grab'])
-                )
-            self.log_network_result_stats(result, task)
-            is_valid = False
-            if task.get('raw'):
-                is_valid = True
-            elif result['ok']:
-                res_code = result['grab'].doc.code
-                is_valid = self.is_valid_network_response_code(
-                        res_code, task
-                )
-            if is_valid:
-                self.parser_service.input_queue.put((result, task))
-            else:
-                self.log_failed_network_result(result)
-                # Try to do network request one more time
-                # TODO:
-                # Implement valid_try_limit
-                # Use it if request failed not because of network error
-                # But because of content integrity check
-                if self.network_try_limit > 0:
-                    task.refresh_cache = True
-                    task.setup_grab_config(
-                        result['grab_config_backup'])
-                    self.add_task(task)
-            if result.get('from_cache'):
-                self.stat.inc('spider:task-%s-cache'
-                                     % task.name)
-            self.stat.inc('spider:request')
-            return True
-        else:
-            raise SpiderError('Unknown result type: %s' % result)

@@ -74,6 +74,7 @@ class ParserService(BaseService):
                     worker.is_busy_event.clear()
 
     def execute_task_handler(self, handler, result, task):
+        # pylint: disable=broad-except
         handler_name = getattr(handler, '__name__', 'NONE')
         try:
             handler_result = handler(result['grab'], task)
@@ -81,8 +82,10 @@ class ParserService(BaseService):
                 pass
             else:
                 for item in handler_result:
-                    self.spider.task_dispatcher.input_queue.put((item, task))
-        except Exception as ex: # pylint: disable=broad-except
+                    self.spider.task_dispatcher.input_queue.put(
+                        (item, task, None),
+                    )
+        except Exception as ex:
             self.spider.task_dispatcher.input_queue.put((ex, task, {
                 'exc_info': sys.exc_info(),
                 'from': 'parser',

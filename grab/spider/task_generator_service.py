@@ -23,7 +23,7 @@ class TaskGeneratorService(BaseService):
                 cache_queue_size = 0
             queue_size = max(
                 self.spider.task_queue.size(),
-                (self.spider.cache_reader_service.input_queue.qsize()
+                (self.spider.cache_reader_service.input_queue.size()
                  if self.spider.cache_reader_service else 0),
                 self.spider.parser_service.input_queue.qsize(),
             )

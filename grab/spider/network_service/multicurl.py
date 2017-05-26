@@ -82,7 +82,9 @@ class NetworkServiceMulticurl(BaseService):
                         worker.is_busy_event.clear()
 
             for result, task in self.iterate_results():
-                self.spider.task_dispatcher.input_queue.put((result, task))
+                self.spider.task_dispatcher.input_queue.put(
+                    (result, task, None),
+                )
 
     def ready_for_task(self):
         return len(self.freelist)

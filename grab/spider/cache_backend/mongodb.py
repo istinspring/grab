@@ -105,7 +105,7 @@ class CacheBackend(object):
             'is_compressed': self.use_compression,
         }
         try:
-            self.dbase.cache.save(item, w=1)
+            res = self.dbase.cache.save(item, w=1)
         except Exception as ex: # pylint: disable=broad-except
             if 'document too large' in six.text_type(ex):
                 logging.error('Document too large. It was not saved into'

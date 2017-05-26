@@ -4,6 +4,7 @@ import time
 from six.moves.queue import Queue, Empty
 
 from grab.spider.base_service import BaseService
+from grab.spider.queue_backend import memory
 
 
 class CacheServiceBase(BaseService):
@@ -11,7 +12,7 @@ class CacheServiceBase(BaseService):
         self.spider = spider
         self.backend = backend
         self.queue_size_limit = 100
-        self.input_queue = Queue()
+        self.input_queue = self.create_input_queue()
         self.worker = self.create_worker(self.worker_callback)
         self.register_workers(self.worker)
 
@@ -23,14 +24,19 @@ class CacheServiceBase(BaseService):
 
 
 class CacheReaderService(CacheServiceBase):
+    def create_input_queue(self):
+        return memory.QueueBackend(spider_name=None)
+
     def worker_callback(self, worker):
         try:
             while not worker.stop_event.is_set():
                 worker.process_pause_signal()
                 try:
-                    task = self.input_queue.get(True, 0.1)
+                    # Can't use (block=True, timeout=0.1) because
+                    # the backend could be mongodb, mysql, etc
+                    task = self.input_queue.get()
                 except Empty:
-                    pass
+                    time.sleep(0.1)
                 else:
                     grab = self.spider.setup_grab_for_task(task)
                     result = None
@@ -39,7 +45,7 @@ class CacheReaderService(CacheServiceBase):
                     if item:
                         result, task = item
                         self.spider.task_dispatcher.input_queue.put(
-                            (result, task)
+                            (result, task, None)
                         )
                     else:
                         #self.spider.add_task(
@@ -62,12 +68,12 @@ class CacheReaderService(CacheServiceBase):
         cache_item = self.backend.get_item(
             grab.config['url'], timeout=task.cache_timeout)
         if cache_item is None:
-            return None
+            self.spider.stat.inc('cache:req-miss')
         else:
             grab.prepare_request()
             self.backend.load_response(grab, cache_item)
             grab.log_request('CACHED')
-            self.spider.stat.inc('spider:request-cache')
+            self.spider.stat.inc('cache:req-hit')
 
             return {
                 'ok': True,
@@ -78,6 +84,9 @@ class CacheReaderService(CacheServiceBase):
 
 
 class CacheWriterService(CacheServiceBase):
+    def create_input_queue(self):
+        return Queue()
+
     def worker_callback(self, worker):
         try:
             while not worker.stop_event.is_set():

@@ -112,7 +112,7 @@ def main():
     parser.add_option('--test-all', action='store_true',
                       default=False,
                       help='Run tests for both Grab and Grab::Spider')
-    parser.add_option('--backend-mongo', action='store_true',
+    parser.add_option('--backend-mongodb', action='store_true',
                       default=False,
                       help='Run extra tests that depends on mongodb')
     parser.add_option('--backend-redis', action='store_true',
@@ -135,8 +135,8 @@ def main():
     GLOBAL['grab_transport'] = opts.grab_transport
     GLOBAL['spider_transport'] = opts.spider_transport
 
-    if opts.backend_mongo:
-        GLOBAL['backends'].append('mongo')
+    if opts.backend_mongodb:
+        GLOBAL['backends'].append('mongodb')
 
     if opts.backend_redis:
         GLOBAL['backends'].append('redis')

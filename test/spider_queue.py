@@ -97,10 +97,10 @@ class SpiderMemoryQueueTestCase(BaseGrabTestCase, SpiderQueueMixin):
 
 
 class BasicSpiderTestCase(SpiderQueueMixin, BaseGrabTestCase):
-    _backend = 'mongo'
+    _backend = 'mongodb'
 
     def setup_queue(self, bot):
-        bot.setup_queue(backend='mongo', **MONGODB_CONNECTION)
+        bot.setup_queue(backend='mongodb', **MONGODB_CONNECTION)
 
     def test_schedule(self):
         """

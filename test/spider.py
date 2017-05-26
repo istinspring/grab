@@ -188,16 +188,6 @@ class BasicSpiderTestCase(BaseGrabTestCase):
         #self.assertEqual(1, bot.stat.counters['spider:error-spidererror'])
         self.assertRaises(SpiderError, bot.run)
 
-    def test_fatal_error(self):
-        class TestSpider(Spider):
-            def task_page(self, unused_grab, unused_task):
-                raise FatalError
-
-        bot = build_spider(TestSpider)
-        bot.setup_queue()
-        bot.add_task(Task('page', url=self.server.get_url()))
-        self.assertRaises(FatalError, bot.run)
-
     def test_task_queue_clear(self):
         class TestSpider(Spider):
             def task_page(self, unused_grab, unused_task):
@@ -210,3 +200,13 @@ class BasicSpiderTestCase(BaseGrabTestCase):
         self.assertEqual(5, bot.task_queue.size())
         bot.run()
         self.assertEqual(0, bot.task_queue.size())
+
+    def test_fatal_error(self):
+        class TestSpider(Spider):
+            def task_page(self, unused_grab, unused_task):
+                raise FatalError
+
+        bot = build_spider(TestSpider)
+        bot.setup_queue()
+        bot.add_task(Task('page', url=self.server.get_url()))
+        self.assertRaises(FatalError, bot.run)

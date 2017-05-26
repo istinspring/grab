@@ -24,7 +24,7 @@ class ServiceWorker(object):
                 callback(*args, **kwargs)
             except Exception as ex:
                 #logging.error('', exc_info=ex)
-                self.spider.fatal_error_queue.put((ex, sys.exc_info()))
+                self.spider.fatal_error_queue.put(sys.exc_info())
         return wrapper
 
     def start(self):
