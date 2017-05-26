@@ -332,7 +332,7 @@ class TestSpiderTestCase(BaseGrabTestCase):
         for _ in range(5):
             bot.add_task(Task('page', url=self.server.get_url()))
         bot.run()
-        self.assertTrue(bot.stat.counters['parser-worker-restarted'] == 2)
+        self.assertTrue(bot.stat.counters['parser:worker-restarted'] == 2)
 
     def test_task_clone_post_request(self):
         class TestSpider(Spider):

@@ -26,7 +26,7 @@ class ParserService(BaseService):
         to_remove = []
         for worker in self.workers_pool:
             if not worker.is_alive():
-                self.spider.stat.inc('parser-worker-restarted')
+                self.spider.stat.inc('parser:worker-restarted')
                 new_worker = self.create_worker(self.worker_callback)
                 self.workers_pool.append(new_worker)
                 new_worker.start()

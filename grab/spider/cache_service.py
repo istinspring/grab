@@ -72,6 +72,7 @@ class CacheReaderService(CacheServiceBase):
                 'grab': grab,
                 'grab_config_backup': grab.dump_config(),
                 'emsg': None,
+                'from_cache': True,
             }, task
 
 
