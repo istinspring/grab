@@ -180,14 +180,14 @@ class SpiderMongoCacheTestCase(SpiderCacheMixin, BaseGrabTestCase):
         self.server.response['get.data'] = 'x' * (1024 * 1024 * 17)
         bot = self.get_configured_spider()
         bot.add_task(Task('null', url=self.server.get_url()))
-        # Second task needs just to give spider time to save network
+        # Second task is needed just to give spider time to save network
         # result into cache
         bot.add_task(Task('null', url=self.server.get_url(), delay=1))
-        #patch = mock.Mock()
-        #with mock.patch('logging.error', patch):
-        bot.run()
+        patch = mock.Mock()
+        with mock.patch('logging.error', patch):
+            bot.run()
         # pylint: disable=unsubscriptable-object
-        #self.assertTrue('Document too large' in patch.call_args[0][0])
+        self.assertTrue('Document too large' in patch.call_args[0][0])
         # pylint: enable=unsubscriptable-object
         self.assertEqual(bot.cache_reader_service.backend.size(), 0)
 

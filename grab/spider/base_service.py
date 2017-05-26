@@ -16,7 +16,7 @@ class ServiceWorker(object):
         )
         self.thread.daemon = True
         th_name = 'worker:%s:%s' % (
-            worker_callback.im_class.__name__,
+            worker_callback.__self__.__class__.__name__,
             worker_callback.__name__,
         )
         self.thread.name = th_name
