@@ -1,3 +1,4 @@
+import time
 from threading import Thread
 
 import six
@@ -5,6 +6,7 @@ from six.moves.queue import Queue, Empty
 
 from grab.error import GrabNetworkError
 from grab.util.misc import camel_case_to_underscore
+from grab.spider.base_service import BaseService
 
 ERROR_TOO_MANY_REFRESH_REDIRECTS = -2
 ERROR_ABBR = {
@@ -17,85 +19,84 @@ def make_class_abbr(name):
     return val.replace('_', '-')
 
 
-class NetworkServiceThreaded(object):
+class NetworkServiceThreaded(BaseService):
     def __init__(self, spider, thread_number):
         self.spider = spider
         self.thread_number = thread_number
-        self.task_queue = Queue()
-        self.result_queue = Queue()
-
-        self.workers = []
-        self.freelist = []
-        for _ in six.moves.range(self.thread_number):
-            thread = Thread(target=self.worker_thread)
-            thread.daemon = True
-            self.workers.append(thread)
-            self.freelist.append(1)
-            thread.start()
-
-    def ready_for_task(self):
-        return len(self.freelist)
-
-    def get_free_threads_number(self):
-        return len(self.freelist)
+        self.worker_pool = []
+        for _ in range(self.thread_number):
+            self.worker_pool.append(self.create_worker(self.worker_callback))
+        self.register_workers(self.worker_pool)
 
     def get_active_threads_number(self):
-        return self.thread_number - len(self.freelist)
+        return sum(1 for x in self.iterate_workers(self.worker_registry)
+                   if x.is_busy_event.is_set())
 
-    def start_task_processing(self, task, grab, grab_config_backup):
-        self.task_queue.put((task, grab, grab_config_backup))
-
-    def process_handlers(self):
-        pass
-
-    def iterate_results(self):
-        while True:
+    # TODO: supervisor worker to restore failed worker threads
+    def worker_callback(self, worker):
+        while not worker.stop_event.is_set():
+            worker.process_pause_signal()
             try:
-                result = self.result_queue.get_nowait()
+                task = self.spider.get_task_from_queue()
             except Empty:
-                break
+                time.sleep(0.1)
             else:
-                # FORMAT: {ok, grab, grab_config_backup, task,
-                #          emsg, error_abbr}
-                #grab.doc.error_code = None
-                #grab.doc.error_msg = None
-                yield result
-
-    def worker_thread(self):
-        while True:
-            try:
-                task, grab, grab_config_backup = self.task_queue.get(
-                    block=True, timeout=0.1,
-                )
-            except Empty:
-                pass
-            else:
-                try:
-                    self.freelist.pop()
-                    result = {
-                        'ok': True,
-                        'ecode': None,
-                        'emsg': None,
-                        'error_abbr': None,
-                        'grab': grab,
-                        'grab_config_backup': grab_config_backup,
-                        'task': task,
-                        'exc': None
-                    }
+                if task is None or task is True:
+                    time.sleep(0.1)
+                else:
+                    worker.is_busy_event.set()
                     try:
-                        grab.request()
-                    except GrabNetworkError as ex:
-                        if ex.original_exc.__class__.__name__ == 'error':
-                            ex_cls = ex
+                        task.network_try_count += 1 # pylint: disable=no-member
+                        is_valid, reason = self.spider.check_task_limits(task)
+                        if is_valid:
+                            grab = self.spider.setup_grab_for_task(task)
+                            # TODO: almost duplicate of Spider.submit_task_to_transport
+                            if self.spider.only_cache:
+                                self.spider.stat.inc('spider:request-network-disabled-only-cache')
+                            else:
+                                grab_config_backup = grab.dump_config()
+                                self.spider.process_grab_proxy(task, grab)
+                                self.spider.stat.inc('spider:request-network')
+                                self.spider.stat.inc('spider:task-%s-network' % task.name)
+
+                                #self.freelist.pop()
+                                try:
+                                    result = {
+                                        'ok': True,
+                                        'ecode': None,
+                                        'emsg': None,
+                                        'error_abbr': None,
+                                        'grab': grab,
+                                        'grab_config_backup': grab_config_backup,
+                                        'task': task,
+                                        'exc': None
+                                    }
+                                    try:
+                                        grab.request()
+                                    except GrabNetworkError as ex:
+                                        if ex.original_exc.__class__.__name__ == 'error':
+                                            ex_cls = ex
+                                        else:
+                                            ex_cls = ex.original_exc
+                                        result.update({
+                                            'ok': False,
+                                            'exc': ex,
+                                            'error_abbr': make_class_abbr(
+                                                ex_cls.__class__.__name__
+                                            ),
+                                        })
+                                    self.spider.task_dispatcher.input_queue.put(
+                                        (result, task, None),
+                                    )
+                                finally:
+                                    pass
+                                    #self.freelist.append(1)
                         else:
-                            ex_cls = ex.original_exc
-                        result.update({
-                            'ok': False,
-                            'exc': ex,
-                            'error_abbr': make_class_abbr(
-                                ex_cls.__class__.__name__
-                            ),
-                        })
-                    self.result_queue.put(result)
-                finally:
-                    self.freelist.append(1)
+                            self.spider.log_rejected_task(task, reason)
+                            # pylint: disable=no-member
+                            handler = task.get_fallback_handler(self.spider)
+                            # pylint: enable=no-member
+                            if handler:
+                                handler(task)
+                    finally:
+                        worker.is_busy_event.clear()

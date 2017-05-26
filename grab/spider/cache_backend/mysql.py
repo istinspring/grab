@@ -36,9 +36,12 @@ class CacheBackend(object):
         self.database = database
         self.connection_config = kwargs
         self.mysql_engine = mysql_engine
-
         self.connect()
-        self.execute('SET TRANSACTION ISOLATION LEVEL READ COMMITTED')
+        self.check_tables()
+        # FIXME: why `use_compression` is not used?
+        self.use_compression = use_compression
+
+    def check_tables(self):
         self.execute('show tables')
         found = False
         for row in self.cursor:
@@ -47,13 +50,16 @@ class CacheBackend(object):
                 break
         if not found:
             self.create_cache_table(self.mysql_engine)
-        # FIXME: why `use_compression` is not used?
-        self.use_compression = use_compression
 
     def connect(self):
-        self.conn = MySQLdb.connect(**self.connection_config)
-        self.conn.select_db(self.database)
-        self.cursor = self.conn.cursor()
+        self.connection = MySQLdb.connect(**self.connection_config)
+        self.connection.select_db(self.database)
+        self.cursor = self.connection.cursor()
+        self.execute('SET TRANSACTION ISOLATION LEVEL READ COMMITTED')
+
+    def close(self):
+        self.cursor.close()
+        self.connection.close()
 
     def execute(self, *args):
         # pylint: disable=no-member

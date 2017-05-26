@@ -16,11 +16,9 @@ class CacheServiceBase(BaseService):
         self.worker = self.create_worker(self.worker_callback)
         self.register_workers(self.worker)
 
-    def shutdown(self):
-        try:
-            self.backend.close()
-        except AttributeError:
-            pass
+    def stop(self):
+        super(CacheServiceBase, self).stop()
+        self.backend.close()
 
 
 class CacheReaderService(CacheServiceBase):
@@ -28,34 +26,31 @@ class CacheReaderService(CacheServiceBase):
         return memory.QueueBackend(spider_name=None)
 
     def worker_callback(self, worker):
-        try:
-            while not worker.stop_event.is_set():
-                worker.process_pause_signal()
-                try:
-                    # Can't use (block=True, timeout=0.1) because
-                    # the backend could be mongodb, mysql, etc
-                    task = self.input_queue.get()
-                except Empty:
-                    time.sleep(0.1)
+        while not worker.stop_event.is_set():
+            worker.process_pause_signal()
+            try:
+                # Can't use (block=True, timeout=0.1) because
+                # the backend could be mongodb, mysql, etc
+                task = self.input_queue.get()
+            except Empty:
+                time.sleep(0.1)
+            else:
+                grab = self.spider.setup_grab_for_task(task)
+                result = None
+                if self.is_read_allowed(task, grab):
+                    item = self.load_from_cache(task, grab)
+                if item:
+                    result, task = item
+                    self.spider.task_dispatcher.input_queue.put(
+                        (result, task, None)
+                    )
                 else:
-                    grab = self.spider.setup_grab_for_task(task)
-                    result = None
-                    if self.is_read_allowed(task, grab):
-                        item = self.load_from_cache(task, grab)
-                    if item:
-                        result, task = item
-                        self.spider.task_dispatcher.input_queue.put(
-                            (result, task, None)
-                        )
-                    else:
-                        #self.spider.add_task(
-                        #    task, queue=self.spider.task_queue,
-                        #)
-                        self.spider.task_dispatcher.input_queue.put((
-                            task, None, {'source': 'cache_reader'}
-                        ))
-        finally:
-            self.shutdown()
+                    #self.spider.add_task(
+                    #    task, queue=self.spider.task_queue,
+                    #)
+                    self.spider.task_dispatcher.input_queue.put((
+                        task, None, {'source': 'cache_reader'}
+                    ))
 
     def is_read_allowed(self, task, grab):
         return (
@@ -88,18 +83,15 @@ class CacheWriterService(CacheServiceBase):
         return Queue()
 
     def worker_callback(self, worker):
-        try:
-            while not worker.stop_event.is_set():
-                worker.process_pause_signal()
-                try:
-                    task, grab = self.input_queue.get(True, 0.1)
-                except Empty:
-                    pass
-                else:
-                    if self.is_write_allowed(task, grab):
-                        self.backend.save_response(task.url, grab)
-        finally:
-            self.shutdown()
+        while not worker.stop_event.is_set():
+            worker.process_pause_signal()
+            try:
+                task, grab = self.input_queue.get(True, 0.1)
+            except Empty:
+                pass
+            else:
+                if self.is_write_allowed(task, grab):
+                    self.backend.save_response(task.url, grab)
 
     def is_write_allowed(self, task, grab):
         return ( 

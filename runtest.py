@@ -104,7 +104,7 @@ def main():
     parser = OptionParser()
     parser.add_option('-t', '--test', help='Run only specified tests')
     parser.add_option('--grab-transport', default='pycurl')
-    parser.add_option('--spider-transport', default='multicurl')
+    parser.add_option('--network-service', default='multicurl')
     parser.add_option('--test-grab', action='store_true',
                       default=False, help='Run tests for Grab::Spider')
     parser.add_option('--test-spider', action='store_true',
@@ -133,7 +133,7 @@ def main():
     opts, _ = parser.parse_args()
 
     GLOBAL['grab_transport'] = opts.grab_transport
-    GLOBAL['spider_transport'] = opts.spider_transport
+    GLOBAL['network_service'] = opts.network_service
 
     if opts.backend_mongodb:
         GLOBAL['backends'].append('mongodb')
@@ -200,9 +200,9 @@ def main():
         result = runner.run(suite)
 
     th_list = list(threading.enumerate())
-    print('Active threads:')
+    print('Active threads (%d):' % len(th_list))
     for th in th_list:
-        print('Thread: %s [%s]' % (th, getattr(th, '_Thread__target', None)))
+        print('Thread: %s (isAlive:%s)' % (th, th.isAlive()))
 
     if result.wasSuccessful():
         sys.exit(0)

@@ -2,6 +2,9 @@ import time
 from threading import Thread, Event
 import logging
 import sys
+import logging
+
+logger = logging.getLogger('grab.spider.base_service')
 
 
 class ServiceWorker(object):
@@ -12,6 +15,11 @@ class ServiceWorker(object):
             args=[self]
         )
         self.thread.daemon = True
+        th_name = 'worker:%s:%s' % (
+            worker_callback.im_class.__name__,
+            worker_callback.__name__,
+        )
+        self.thread.name = th_name
         self.pause_event = Event()
         self.stop_event = Event()
         self.resume_event = Event()
@@ -23,7 +31,7 @@ class ServiceWorker(object):
             try:
                 callback(*args, **kwargs)
             except Exception as ex:
-                #logging.error('', exc_info=ex)
+                logger.error('Spider Service Fatal Error', exc_info=ex)
                 self.spider.fatal_error_queue.put(sys.exc_info())
         return wrapper
 

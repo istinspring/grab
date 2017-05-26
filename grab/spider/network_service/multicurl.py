@@ -69,8 +69,8 @@ class NetworkServiceMulticurl(BaseService):
                         task.network_try_count += 1 # pylint: disable=no-member
                         is_valid, reason = self.spider.check_task_limits(task)
                         if is_valid:
-                            task_grab = self.spider.setup_grab_for_task(task)
-                            self.spider.submit_task_to_transport(task, task_grab)
+                            grab = self.spider.setup_grab_for_task(task)
+                            self.spider.submit_task_to_transport(task, grab)
                         else:
                             self.spider.log_rejected_task(task, reason)
                             # pylint: disable=no-member

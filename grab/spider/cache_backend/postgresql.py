@@ -31,10 +31,10 @@ class CacheBackend(object):
         import psycopg2
         from psycopg2.extensions import ISOLATION_LEVEL_READ_COMMITTED
 
+        self.connection_config = kwargs
+        self.database = database
         self.spider = spider
-        self.conn = psycopg2.connect(dbname=database, **kwargs)
-        self.conn.set_isolation_level(ISOLATION_LEVEL_READ_COMMITTED)
-        self.cursor = self.conn.cursor()
+        self.connect()
         self.cursor.execute("""
             SELECT
                 TABLE_NAME
@@ -54,6 +54,18 @@ class CacheBackend(object):
 
         # FIXME: why `use_compression` is not used?
         self.use_compression = use_compression
+
+    def close(self):
+        self.cursor.close()
+        self.connection.close()
+
+    def connect(self):
+        import psycopg2
+        from psycopg2.extensions import ISOLATION_LEVEL_READ_COMMITTED
+
+        self.connection = psycopg2.connect(dbname=self.database, **self.connection_config)
+        self.connection.set_isolation_level(ISOLATION_LEVEL_READ_COMMITTED)
+        self.cursor = self.connection.cursor()
 
     def create_cache_table(self):
         self.cursor.execute('BEGIN')

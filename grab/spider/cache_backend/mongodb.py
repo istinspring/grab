@@ -32,9 +32,16 @@ logger = logging.getLogger('grab.spider.cache_backend.mongodb')
 class CacheBackend(object):
     def __init__(self, database, use_compression=False, spider=None, **kwargs):
         self.spider = spider
-        self.conn = pymongo.MongoClient(**kwargs)
-        self.dbase = self.conn[database]
+        self.connection_config = kwargs
+        self.connect()
+        self.dbase = self.connection[database]
         self.use_compression = use_compression
+
+    def connect(self):
+        self.connection = pymongo.MongoClient(**self.connection_config)
+
+    def close(self):
+        self.connection.close()
 
     def get_item(self, url, timeout=None):
         """
@@ -132,6 +139,3 @@ class CacheBackend(object):
             query = {'_id': _hash}
         doc = self.dbase.cache.find_one(query, {'id': 1})
         return doc is not None
-
-    def close(self):
-        self.conn.close()

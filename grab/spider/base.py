@@ -5,34 +5,28 @@ import logging
 import time
 from random import randint
 from copy import deepcopy
-import os
-from traceback import format_exc, format_exception, format_tb
+from traceback import format_exception, format_tb, format_stack
 from datetime import datetime
-from threading import Thread
-from collections import deque
-from threading import Event
-from six.moves.queue import Queue
-import sys
 
-from six.moves import queue
+from six.moves.queue import Queue, Empty
 import six
 from weblib import metric
-from weblib.error import ResponseNotValid
 
 from grab.base import Grab
 from grab.error import GrabInvalidUrl
-from grab.spider.error import (SpiderError, SpiderMisuseError, FatalError,
-                               NoTaskHandler, NoDataHandler,
-                               SpiderConfigurationError)
+from grab.spider.error import (
+    SpiderError,
+    SpiderMisuseError,
+    NoTaskHandler,
+)
+from grab.util.warning import warn
 from grab.spider.task import Task
 from grab.proxylist import ProxyList, BaseProxySource
 from grab.util.misc import camel_case_to_underscore
-from grab.base import GLOBAL_STATE
 from grab.stat import Stat
 from grab.spider.parser_service import ParserService
 from grab.spider.cache_service import CacheReaderService, CacheWriterService
 from grab.spider.task_generator_service import TaskGeneratorService
-from grab.util.warning import warn
 from grab.spider.task_dispatcher_service import TaskDispatcherService
 from grab.spider.http_api_service import HttpApiService
 
@@ -133,11 +127,9 @@ class Spider(object):
         only_cache=False,
         config=None,
         args=None,
-        # New options start here
         taskq=None,
         parser_requests_per_process=10000,
         parser_pool_size=1,
-        # http api
         http_api_port=None,
         network_service='multicurl',
         grab_transport='pycurl',
@@ -258,14 +250,13 @@ class Spider(object):
         mod = __import__('grab.spider.cache_backend.%s' % backend,
                          globals(), locals(), ['foo'])
         backend = mod.CacheBackend(
-            database=database,
-            spider=self,
-            **kwargs
+            database=database, spider=self, **kwargs
         )
         self.cache_reader_service = CacheReaderService(self, backend)
-        self.cache_reader_service.start()
+        backend = mod.CacheBackend(
+            database=database, spider=self, **kwargs
+        )
         self.cache_writer_service = CacheWriterService(self, backend)
-        self.cache_writer_service.start()
 
     def setup_queue(self, backend='memory', **kwargs):
         """
@@ -306,26 +297,20 @@ class Spider(object):
         if not task.url.startswith(('http://', 'https://', 'ftp://',
                                     'file://', 'feed://')):
             self.stat.collect('task-with-invalid-url', task.url)
-            msg = ('It is not allowed to build Task object with '
-                   'relative URL: %s' % task.url)
-            ex = SpiderError(msg)
+            msg = 'Invalid task URL: %s' % task.url
             if raise_error:
-                raise ex
+                raise SpiderError(msg)
             else:
-                # Just want to print traceback
-                # Do this to avoid the error
-                # http://bugs.python.org/issue23003
-                # FIXME: use something less awkward
-                try:
-                    raise ex
-                except SpiderError as ex:
-                    logger.error('', exc_info=ex)
+                logger.error('%s\nTraceback:\n%s' % (
+                    msg,
+                    ''.join(format_stack()),
+                ))
                 return False
-
-        # TODO: keep original task priority if it was set explicitly
-        # WTF the previous comment means?
-        queue.put(task, priority=task.priority, schedule_time=task.schedule_time)
-        return True
+        else:
+            # TODO: keep original task priority if it was set explicitly
+            # WTF the previous comment means?
+            queue.put(task, priority=task.priority, schedule_time=task.schedule_time)
+            return True
 
     def stop(self):
         """
@@ -540,7 +525,7 @@ class Spider(object):
     def get_task_from_queue(self):
         try:
             return self.task_queue.get()
-        except queue.Empty:
+        except Empty:
             size = self.task_queue.size()
             if size:
                 return True
@@ -662,6 +647,8 @@ class Spider(object):
                 self.network_service.start_task_processing(
                     task, grab, grab_config_backup)
             except GrabInvalidUrl:
+                # TODO: log error
+                # TODO: show traceback
                 logger.debug('Task %s has invalid URL: %s',
                              task.name, task.url)
                 self.stat.collect('invalid-url', task.url)
@@ -681,17 +668,20 @@ class Spider(object):
             ]
             if self.http_api_service:
                 self.http_api_service.start()
+            if self.cache_reader_service:
+                services.insert(0, self.cache_reader_service)
+            if self.cache_writer_service:
+                services.insert(0, self.cache_writer_service)
             for srv in services:
                 srv.start()
             while self.work_allowed:
                 try:
                     exc_info = self.fatal_error_queue.get(True, 0.5)
-                except queue.Empty:  
+                except Empty:  
                     pass
                 else:
-                    logger.error('Fatal spider error', exc_info=exc_info)
-                    #print(exc_info)
-                    #print(''.join(format_tb(exc_info[2])))
+                    # The trackeback of fatal error MUST BE
+                    # rendered by the sender
                     raise exc_info[1]
                 if self.is_idle():
                     for srv in services:
@@ -706,6 +696,9 @@ class Spider(object):
         except Exception as ex:
             raise
         finally:
+            # TODO:
+            if self.task_queue:
+                self.task_queue.close()
             #print('Start stopping services')
             for srv in services:
                 # Resume service if it has been paused
@@ -716,11 +709,11 @@ class Spider(object):
             start = time.time()
             while any(x.is_alive() for x in services):
                 time.sleep(0.1)
-                if time.time() - start > 1:
+                if time.time() - start > 10:
                     break
             for srv in services:
                 if srv.is_alive():
-                    print('The %s is not stopped :(' % srv)
+                    print('The %s has not stopped :(' % srv)
             self.stat.print_progress_line()
             self.shutdown()
             if self.task_queue:

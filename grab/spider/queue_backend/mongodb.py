@@ -30,8 +30,8 @@ class QueueBackend(QueueInterface):
 
         self.database = database
         self.queue_name = queue_name
-        conn = pymongo.MongoClient(**kwargs)
-        self.collection = conn[self.database][self.queue_name]
+        self.connection = pymongo.MongoClient(**kwargs)
+        self.collection = self.connection[self.database][self.queue_name]
         logger.debug('Using collection: %s', self.collection)
 
         self.collection.ensure_index('priority')
@@ -64,3 +64,6 @@ class QueueBackend(QueueInterface):
 
     def clear(self):
         self.collection.remove()
+
+    def close(self):
+        self.connection.close()
