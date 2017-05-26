@@ -8,7 +8,7 @@ class TaskGeneratorService(BaseService):
     def __init__(self, real_generator, spider):
         self.real_generator = real_generator
         self.spider = spider
-        self.task_queue_threshold = min(200, self.spider.thread_number * 2)
+        self.task_queue_threshold = max(200, self.spider.thread_number * 2)
         self.worker = self.create_worker(self.worker_callback)
         self.register_workers(self.worker)
 

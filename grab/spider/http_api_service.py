@@ -58,7 +58,7 @@ class ApiHandler(SimpleHTTPRequestHandler):
                 self.spider.network_service.get_active_threads_number()
             ),
             'cache_reader_input_queue': (
-                self.spider.cache_reader_service.input_queue.qsize()
+                self.spider.cache_reader_service.input_queue.size()
                 if self.spider.cache_reader_service else '--'
             ),
             'cache_writer_input_queue': (

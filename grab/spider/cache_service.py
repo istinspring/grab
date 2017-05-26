@@ -36,18 +36,15 @@ class CacheReaderService(CacheServiceBase):
                 time.sleep(0.1)
             else:
                 grab = self.spider.setup_grab_for_task(task)
-                result = None
+                item = None
                 if self.is_read_allowed(task, grab):
                     item = self.load_from_cache(task, grab)
-                if item:
-                    result, task = item
-                    self.spider.task_dispatcher.input_queue.put(
-                        (result, task, None)
-                    )
-                else:
-                    #self.spider.add_task(
-                    #    task, queue=self.spider.task_queue,
-                    #)
+                    if item:
+                        result, task = item
+                        self.spider.task_dispatcher.input_queue.put(
+                            (result, task, None)
+                        )
+                if not item:
                     self.spider.task_dispatcher.input_queue.put((
                         task, None, {'source': 'cache_reader'}
                     ))
