@@ -1,5 +1,0 @@
-mysqlclient;platform_system!="Windows"
-psycopg2
-pymongo
-qr
-redis
