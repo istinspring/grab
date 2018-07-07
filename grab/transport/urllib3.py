@@ -235,13 +235,16 @@ class Urllib3Transport(BaseTransport):
             proxy_url = '%s://%s' % (req.proxy_type, req.proxy)
             if req.proxy_type == 'socks5':
                 pool = SOCKSProxyManager(
-                    proxy_url,
+                    proxy_url=proxy_url,
+                    num_pools=1,
                     cert_reqs='CERT_REQUIRED',
                     ca_certs=certifi.where()
                 ) # , proxy_headers=headers)
             else:
                 pool = ProxyManager(
-                    proxy_url, proxy_headers=headers,
+                    proxy_url=proxy_url,
+                    num_pools=1,
+                    proxy_headers=headers,
                     cert_reqs='CERT_REQUIRED',
                     ca_certs=certifi.where()
                 )
