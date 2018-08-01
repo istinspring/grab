@@ -92,7 +92,13 @@ class FileProxySource(BaseProxySource):
         super(FileProxySource, self).__init__(**kwargs)
 
     def load_raw_data(self):
-        return open(self.path).read()
+        # if used in `create_grab_instance` will cause
+        # OSError: [Errno 24] Too many open files: <filename>
+        # need to close file after read
+        data = ''
+        with open(self.path, 'r') as fl:
+            data = fl.read()
+        return data
 
 
 class WebProxySource(BaseProxySource):
